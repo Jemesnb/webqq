@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QQ Web</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #333; display: flex; min-height: 100vh; }
+    .sidebar { width: 160px; background: #fff; border-right: 1px solid #e0e0e0; padding: 20px 0; flex-shrink: 0; }
+    .sidebar h1 { font-size: 1.1rem; padding: 0 16px 16px; border-bottom: 1px solid #eee; margin-bottom: 8px; }
+    .nav-item { padding: 10px 16px; cursor: pointer; font-size: 0.9rem; color: #666; transition: all 0.15s; }
+    .nav-item:hover { background: #f0f0f0; color: #333; }
+    .nav-item.active { background: #e8f5e9; color: #07c160; font-weight: 500; border-right: 3px solid #07c160; }
+    .content { flex: 1; padding: 20px; max-width: 800px; }
+    .page { display: none; }
+    .page.active { display: block; }
+    .card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+    .card h2 { font-size: 1rem; margin-bottom: 12px; color: #666; }
+    .msg-item { padding: 8px 0; border-bottom: 1px solid #eee; }
+    .msg-item:last-child { border-bottom: none; }
+    .msg-meta { font-size: 0.8rem; color: #999; }
+    .msg-text { margin-top: 4px; word-break: break-all; }
+    .msg-text img { max-width: 100%; max-height: 300px; border-radius: 6px; margin: 4px 0; }
+    form { display: flex; flex-direction: column; gap: 8px; }
+    input, textarea, select { padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9rem; }
+    textarea { min-height: 70px; resize: vertical; }
+    button { padding: 10px; color: #fff; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+    .btn-send { background: #07c160; }
+    .btn-send:hover { background: #06ad56; }
+    .btn-refresh { background: #666; padding: 4px 12px; font-size: 0.8rem; float: right; }
+    .btn-refresh:hover { background: #555; }
+    .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 8px 20px; border-radius: 6px; font-size: 0.9rem; display: none; z-index: 100; }
+    .badge { display: inline-block; font-size: 0.75rem; padding: 1px 8px; border-radius: 10px; margin-left: 6px; }
+    .badge-private { background: #07c160; color: #fff; }
+    .badge-group { background: #4a90d9; color: #fff; }
+    .type-selector { display: flex; gap: 0; margin-bottom: 8px; }
+    .type-selector button { flex: 1; padding: 8px; border: 1px solid #ddd; background: #f9f9f9; color: #333; font-size: 0.9rem; cursor: pointer; }
+    .type-selector button.active { background: #07c160; color: #fff; border-color: #07c160; }
+    .type-selector button:first-child { border-radius: 6px 0 0 6px; }
+    .type-selector button:last-child { border-radius: 0 6px 6px 0; }
+    .tag { display: inline-block; font-size: 0.7rem; padding: 1px 6px; border-radius: 4px; margin-right: 4px; }
+    .tag-private { background: #e8f5e9; color: #2e7d32; }
+    .tag-group { background: #e3f2fd; color: #1565c0; }
+    .image-picker { display: flex; gap: 8px; align-items: center; }
+    .btn-image { background: #e0e0e0; color: #333; padding: 8px 14px; font-size: 0.85rem; }
+    .btn-image:hover { background: #d0d0d0; }
+    .image-preview { max-width: 120px; max-height: 80px; border-radius: 4px; display: none; }
+    .btn-remove-image { background: #ff4444; padding: 2px 8px; font-size: 0.75rem; display: none; }
+    .contact-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 300px; overflow-y: auto; }
+    .contact-item { padding: 6px 12px; border: 1px solid #e0e0e0; border-radius: 6px; font-size: 0.85rem; cursor: pointer; background: #fafafa; transition: background 0.15s; }
+    .contact-item:hover { background: #e8f5e9; border-color: #07c160; }
+    .contact-item .name { font-weight: 500; }
+    .contact-item .id { color: #999; font-size: 0.75rem; margin-left: 4px; }
+    .row { display: flex; gap: 12px; }
+    .col { flex: 1; }
+    .card-header { display: flex; justify-content: space-between; align-items: center; }
+    .inline-form { display: flex; flex-direction: row; gap: 8px; }
+    .inline-form input { flex: 1; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+    <h1>QQ Web</h1>
+    <div id="myInfo" style="padding:8px 16px 12px;font-size:0.8rem;color:#07c160;border-bottom:1px solid #eee;margin-bottom:8px;display:none">
+        <div id="myNickname" style="font-weight:500"></div>
+        <div id="myUserId" style="color:#999;font-size:0.75rem"></div>
+    </div>
+    <div class="nav-item active" onclick="switchPage('msg',this)">消息</div>
+    <div class="nav-item" onclick="switchPage('contacts',this)">通讯录</div>
+    <div class="nav-item" onclick="switchPage('friendmgmt',this)">好友管理</div>
+    <div class="nav-item" onclick="switchPage('groupmgmt',this)">群管理</div>
+</div>
+
+<div class="content">
+
+<!-- ========== 消息页面 ========== -->
+<div class="page active" id="page-msg">
+    <div class="card">
+        <h2>发送消息</h2>
+        <form id="sendForm">
+            <div class="type-selector" id="typeSelector">
+                <button type="button" class="active" data-type="private">私聊</button>
+                <button type="button" data-type="group">群聊</button>
+            </div>
+            <input type="number" id="targetId" value="1409710" placeholder="目标 QQ 号">
+            <input type="number" id="groupId" value="" placeholder="群号" style="display:none">
+            <textarea id="msgInput" placeholder="输入消息内容..."></textarea>
+            <div class="image-picker">
+                <input type="file" id="imageInput" accept="image/*" style="display:none">
+                <button type="button" class="btn-image" onclick="document.getElementById('imageInput').click()">添加图片</button>
+                <img class="image-preview" id="imagePreview">
+                <button type="button" class="btn-remove-image" id="removeImageBtn" onclick="removeImage()">移除</button>
+            </div>
+            <button type="submit" class="btn-send">发送</button>
+        </form>
+    </div>
+    <div class="card">
+        <h2>已收消息 <span class="badge badge-private" id="msgCount">0</span></h2>
+        <div id="msgList"></div>
+    </div>
+</div>
+
+<!-- ========== 通讯录页面 ========== -->
+<div class="page" id="page-contacts">
+    <div class="row">
+        <div class="col">
+            <div class="card">
+                <div class="card-header">
+                    <h2>好友列表</h2>
+                    <button class="btn-refresh" onclick="loadFriends()">刷新</button>
+                </div>
+                <div class="contact-list" id="friendList">加载中...</div>
+            </div>
+        </div>
+        <div class="col">
+            <div class="card">
+                <div class="card-header">
+                    <h2>群聊列表</h2>
+                    <button class="btn-refresh" onclick="loadGroups()">刷新</button>
+                </div>
+                <div class="contact-list" id="groupList">加载中...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ========== 好友管理页面 ========== -->
+<div class="page" id="page-friendmgmt">
+    <div class="card">
+        <div class="card-header">
+            <h2>好友申请</h2>
+            <button class="btn-refresh" onclick="loadFriendRequests()">刷新</button>
+        </div>
+        <div id="friendRequestList" style="font-size:0.85rem;color:#999">加载中...</div>
+    </div>
+    <div class="card">
+        <div class="card-header">
+            <h2>可疑好友申请</h2>
+            <button class="btn-refresh" onclick="loadDoubtRequests()">刷新</button>
+        </div>
+        <div id="doubtRequestList" style="font-size:0.85rem;color:#999">加载中...</div>
+    </div>
+</div>
+
+<!-- ========== 群管理页面 ========== -->
+<div class="page" id="page-groupmgmt">
+    <div class="card">
+        <div class="card-header">
+            <h2>选择群</h2>
+            <button class="btn-refresh" onclick="loadGroupMgmt()">刷新</button>
+        </div>
+        <select id="groupMgmtSelect" style="width:100%" onchange="loadGroupMembers()">
+            <option value="">-- 请选择群 --</option>
+        </select>
+    </div>
+    <div class="card" id="wholeBanCard" style="display:none">
+        <div class="card-header">
+            <h2>全员禁言</h2>
+        </div>
+        <div style="display:flex;gap:8px">
+            <button onclick="toggleWholeBan(true)" style="background:#f90;flex:1">开启全员禁言</button>
+            <button onclick="toggleWholeBan(false)" style="background:#07c160;flex:1">关闭全员禁言</button>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-header">
+            <h2>群成员 <span class="badge badge-group" id="memberCount">0</span></h2>
+            <button class="btn-refresh" onclick="loadGroupMembers()">刷新</button>
+        </div>
+        <div id="memberList" style="font-size:0.85rem;color:#999">请先选择群</div>
+    </div>
+</div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ==================== 页面切换 ====================
+function switchPage(name, el) {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + name).classList.add('active');
+    el.classList.add('active');
+    if (name === 'groupmgmt') loadGroupMgmt();
+}
+
+// ==================== 通用 ====================
+let currentType = 'private';
+
+document.getElementById('typeSelector').addEventListener('click', (e) => {
+    if (!e.target.dataset.type) return;
+    currentType = e.target.dataset.type;
+    document.querySelectorAll('#typeSelector button').forEach(b => b.classList.remove('active'));
+    e.target.classList.add('active');
+    document.getElementById('targetId').style.display = currentType === 'private' ? 'block' : 'none';
+    document.getElementById('groupId').style.display = currentType === 'group' ? 'block' : 'none';
+});
+
+function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    setTimeout(() => t.style.display = 'none', 2000);
+}
+
+function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+function pickFriend(id, name) {
+    switchPage('msg', document.querySelector('.nav-item'));
+    currentType = 'private';
+    document.querySelectorAll('#typeSelector button').forEach(b => b.classList.remove('active'));
+    document.querySelector('#typeSelector button[data-type="private"]').classList.add('active');
+    document.getElementById('targetId').value = id;
+    document.getElementById('targetId').style.display = 'block';
+    document.getElementById('groupId').style.display = 'none';
+    document.getElementById('msgInput').focus();
+    showToast('已选择: ' + name);
+}
+
+function pickGroup(id, name) {
+    switchPage('msg', document.querySelector('.nav-item'));
+    currentType = 'group';
+    document.querySelectorAll('#typeSelector button').forEach(b => b.classList.remove('active'));
+    document.querySelector('#typeSelector button[data-type="group"]').classList.add('active');
+    document.getElementById('groupId').value = id;
+    document.getElementById('groupId').style.display = 'block';
+    document.getElementById('targetId').style.display = 'none';
+    document.getElementById('msgInput').focus();
+    showToast('已选择: ' + name);
+}
+
+// ==================== 消息收发 ====================
+function renderMessage(text) {
+    let parts = text.split(/(\[CQ:[^\]]+\])/);
+    let html = '';
+    for (let part of parts) {
+        let m = part.match(/^\[CQ:image,[^\]]*\bfile=([^,\]]+)[^\]]*\]$/);
+        if (m) {
+            html += '<br><img src="/api/proxy?file=' + encodeURIComponent(m[1]) + '" loading="lazy"><br>';
+        } else if (part.startsWith('[CQ:')) {
+            continue;
+        } else {
+            html += escapeHtml(part);
+        }
+    }
+    return html;
+}
+
+async function loadMessages() {
+    const resp = await fetch('/api/messages?limit=50');
+    const msgs = await resp.json();
+    const list = document.getElementById('msgList');
+    document.getElementById('msgCount').textContent = msgs.length;
+    if (msgs.length === 0) {
+        list.innerHTML = '<div style="color:#999;font-size:0.9rem">暂无消息</div>';
+        return;
+    }
+    list.innerHTML = msgs.map(m => {
+        const isPrivate = m.msg_type === 'private';
+        const tag = isPrivate
+            ? '<span class="tag tag-private">私聊</span>'
+            : '<span class="tag tag-group">群聊</span>';
+        const senderName = m.sender_name || m.sender_id;
+        const from = isPrivate
+            ? '来自 ' + escapeHtml(senderName)
+            : '来自 ' + escapeHtml(senderName) + ' (' + (m.group_name || m.group_id) + ')';
+        return '<div class="msg-item">'
+            + '<div class="msg-meta">' + tag + from + ' · ' + m.time + '</div>'
+            + '<div class="msg-text">' + renderMessage(m.message) + '</div>'
+            + '</div>';
+    }).join('');
+}
+
+let selectedImage = null;
+
+document.getElementById('imageInput').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+        selectedImage = ev.target.result.split(',')[1];
+        document.getElementById('imagePreview').src = ev.target.result;
+        document.getElementById('imagePreview').style.display = 'block';
+        document.getElementById('removeImageBtn').style.display = 'inline-block';
+    };
+    reader.readAsDataURL(file);
+});
+
+function removeImage() {
+    selectedImage = null;
+    document.getElementById('imageInput').value = '';
+    document.getElementById('imagePreview').style.display = 'none';
+    document.getElementById('removeImageBtn').style.display = 'none';
+}
+
+// Ctrl+V 粘贴图片（全局监听）
+document.addEventListener('paste', function(e) {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (let item of items) {
+        if (item.type.startsWith('image/')) {
+            const file = item.getAsFile();
+            if (!file) continue;
+            e.preventDefault();
+            const reader = new FileReader();
+            reader.onload = function(ev) {
+                selectedImage = ev.target.result.split(',')[1];
+                document.getElementById('imagePreview').src = ev.target.result;
+                document.getElementById('imagePreview').style.display = 'block';
+                document.getElementById('removeImageBtn').style.display = 'inline-block';
+                showToast('已粘贴图片');
+            };
+            reader.readAsDataURL(file);
+            break;
+        }
+    }
+});
+
+document.getElementById('sendForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const message = document.getElementById('msgInput').value.trim();
+    if (!message && !selectedImage) { showToast('请输入消息或选择图片'); return; }
+
+    let payload;
+    if (currentType === 'group') {
+        const group_id = parseInt(document.getElementById('groupId').value);
+        if (!group_id) { showToast('请输入群号'); return; }
+        payload = {msg_type: 'group', group_id, message, image_base64: selectedImage || ''};
+    } else {
+        const target_id = parseInt(document.getElementById('targetId').value);
+        payload = {msg_type: 'private', target_id, message, image_base64: selectedImage || ''};
+    }
+
+    const resp = await fetch('/api/send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    if (data.status === 'ok') {
+        showToast('发送成功');
+        document.getElementById('msgInput').value = '';
+        removeImage();
+    } else {
+        showToast('发送失败: ' + (data.msg || 'unknown'));
+    }
+});
+
+// ==================== 联系人 ====================
+async function loadFriends() {
+    const el = document.getElementById('friendList');
+    el.innerHTML = '加载中...';
+    const resp = await fetch('/api/friends');
+    const data = await resp.json();
+    if (data.status !== 'ok' || !data.data.length) {
+        el.innerHTML = '<div style="color:#999;font-size:0.85rem">无好友</div>';
+        return;
+    }
+    el.innerHTML = data.data.map(f =>
+        '<div class="contact-item" style="display:flex;justify-content:space-between;align-items:center">'
+        + '<div onclick="pickFriend(' + f.user_id + ', \'' + escapeHtml(f.nickname || f.user_id) + '\')" style="flex:1;cursor:pointer">'
+        + '<span class="name">' + escapeHtml(f.nickname || '未知') + '</span>'
+        + '<span class="id">(' + f.user_id + ')</span></div>'
+        + '<button onclick="deleteFriend(' + f.user_id + ',\'' + escapeHtml(f.nickname || f.user_id) + '\')" style="background:#ff4444;padding:2px 8px;font-size:0.75rem;margin-left:8px">删除</button>'
+        + '</div>'
+    ).join('');
+}
+
+async function deleteFriend(userId, nickname) {
+    if (!confirm('确定删除好友 ' + nickname + ' (' + userId + ') 吗？')) return;
+    const resp = await fetch('/api/friend/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({user_id: userId})
+    });
+    const data = await resp.json();
+    if (data.status === 'ok') {
+        showToast('已删除 ' + nickname);
+        loadFriends();
+    } else {
+        showToast('删除失败: ' + (data.msg || ''));
+    }
+}
+
+async function loadGroups() {
+    const el = document.getElementById('groupList');
+    el.innerHTML = '加载中...';
+    const resp = await fetch('/api/groups');
+    const data = await resp.json();
+    if (data.status !== 'ok' || !data.data.length) {
+        el.innerHTML = '<div style="color:#999;font-size:0.85rem">无群聊</div>';
+        return;
+    }
+    el.innerHTML = data.data.map(g =>
+        '<div class="contact-item" onclick="pickGroup(' + g.group_id + ', \'' + escapeHtml(g.group_name || g.group_id) + '\')">'
+        + '<span class="name">' + escapeHtml(g.group_name || '未知') + '</span>'
+        + '<span class="id">(' + g.group_id + ')</span>'
+        + '</div>'
+    ).join('');
+}
+
+// ==================== 好友管理 ====================
+async function loadFriendRequests() {
+    const el = document.getElementById('friendRequestList');
+    const resp = await fetch('/api/friend_requests');
+    const data = await resp.json();
+    if (data.status !== 'ok') { el.innerHTML = '<div style="color:#999">加载失败</div>'; return; }
+    const list = data.data;
+    if (!list.length) { el.innerHTML = '<div style="color:#999">暂无好友申请</div>'; return; }
+    el.innerHTML = list.map(r => {
+        const statusMap = {pending: '<span style="color:#f90">等待处理</span>', approved: '<span style="color:#090">已通过</span>', rejected: '<span style="color:#999">已拒绝</span>'};
+        const btns = r.status === 'pending'
+            ? '<button onclick="handleFriendReq(' + r.id + ',true)" style="background:#07c160;padding:4px 12px;font-size:0.8rem;margin:0 4px">通过</button>'
+            + '<button onclick="handleFriendReq(' + r.id + ',false)" style="background:#ff4444;padding:4px 12px;font-size:0.8rem">拒绝</button>'
+            : '';
+        return '<div class="msg-item" style="display:flex;justify-content:space-between;align-items:center">'
+            + '<div><div class="msg-meta">' + r.user_id + (r.comment ? ' · ' + escapeHtml(r.comment) : '') + '</div>'
+            + '<div>' + statusMap[r.status] + ' ' + r.time + '</div></div>'
+            + '<div>' + btns + '</div></div>';
+    }).join('');
+}
+
+async function handleFriendReq(id, approve) {
+    const resp = await fetch('/api/friend_request/handle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id, approve, remark: ''})
+    });
+    const data = await resp.json();
+    showToast(data.status === 'ok' ? (approve ? '已通过' : '已拒绝') : '操作失败');
+    loadFriendRequests();
+}
+
+// ==================== 可疑好友申请 ====================
+async function loadDoubtRequests() {
+    const el = document.getElementById('doubtRequestList');
+    const resp = await fetch('/api/friend_requests/doubt');
+    const data = await resp.json();
+    if (data.status !== 'ok') { el.innerHTML = '<div style="color:#999">加载失败</div>'; return; }
+    const list = data.data || [];
+    if (!list.length) { el.innerHTML = '<div style="color:#999">无可疑好友申请</div>'; return; }
+    if (!Array.isArray(list)) {
+        el.innerHTML = '<div style="color:#999">数据格式异常</div>';
+        return;
+    }
+    el.innerHTML = list.map(r => {
+        const uid = r.user_id || r.uin || '未知';
+        const nickname = r.nickname || r.nick || '';
+        const comment = r.comment || '';
+        const flag = r.flag || '';
+        return '<div class="msg-item" style="display:flex;justify-content:space-between;align-items:center">'
+            + '<div><div class="msg-meta">' + uid + (comment ? ' · ' + escapeHtml(comment) : '') + '</div>'
+            + '<div>' + escapeHtml(nickname) + '</div></div>'
+            + '<div>'
+            + '<button onclick="handleDoubtReq(\'' + encodeURIComponent(flag) + '\',true)" style="background:#f90;padding:4px 12px;font-size:0.8rem;margin:0 4px">通过</button>'
+            + '<button onclick="handleDoubtReq(\'' + encodeURIComponent(flag) + '\',false)" style="background:#999;padding:4px 12px;font-size:0.8rem">拒绝</button>'
+            + '</div></div>';
+    }).join('');
+}
+
+async function handleDoubtReq(flag, approve) {
+    const resp = await fetch('/api/friend_request/handle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({flag: decodeURIComponent(flag), approve, doubt: true})
+    });
+    const data = await resp.json();
+    showToast(data.status === 'ok' ? (approve ? '已通过' : '已拒绝') : '操作失败: ' + (data.msg || ''));
+    loadDoubtRequests();
+}
+
+// ==================== 群管理 ====================
+let selectedGroupId = null;
+let myUserId = null;
+
+async function loadMyInfo() {
+    const resp = await fetch('/api/me');
+    const data = await resp.json();
+    if (data.status === 'ok' && data.data) {
+        myUserId = data.data.user_id;
+        document.getElementById('myInfo').style.display = 'block';
+        document.getElementById('myNickname').textContent = data.data.nickname || '未知';
+        document.getElementById('myUserId').textContent = data.data.user_id;
+    }
+}
+
+async function loadGroupMgmt() {
+    const resp = await fetch('/api/groups');
+    const data = await resp.json();
+    const sel = document.getElementById('groupMgmtSelect');
+    if (data.status !== 'ok' || !data.data.length) {
+        sel.innerHTML = '<option value="">无可用群</option>';
+        return;
+    }
+    sel.innerHTML = '<option value="">-- 请选择群 --</option>'
+        + data.data.map(g => '<option value="' + g.group_id + '">' + escapeHtml(g.group_name) + ' (' + g.group_id + ')</option>').join('');
+}
+
+async function loadGroupMembers() {
+    const sel = document.getElementById('groupMgmtSelect');
+    const group_id = parseInt(sel.value);
+    const el = document.getElementById('memberList');
+    if (!group_id) { el.innerHTML = '请先选择群'; return; }
+    selectedGroupId = group_id;
+    el.innerHTML = '加载中...';
+    const resp = await fetch('/api/group/members?group_id=' + group_id);
+    const data = await resp.json();
+    if (data.status !== 'ok') { el.innerHTML = '加载失败'; return; }
+    const members = data.data || [];
+    const myRole = data.my_role || 'member';
+    document.getElementById('memberCount').textContent = members.length;
+    document.getElementById('wholeBanCard').style.display = myRole === 'member' ? 'none' : 'block';
+    if (myRole === 'member') {
+        el.innerHTML = '<div style="color:#f90;font-size:0.85rem;margin-bottom:12px">⚠ 你是普通成员，没有管理权限</div>'
+            + members.map(m => {
+                const name = m.card || m.nickname || m.user_id;
+                return '<div class="msg-item" style="display:flex;justify-content:space-between;align-items:center">'
+                    + '<div><div class="msg-meta">' + (m.user_id === myUserId ? '<span style="color:#f90;font-size:0.75rem">👈 我 </span>' : '') + escapeHtml(name) + ' (' + m.user_id + ')</div></div>'
+                    + '<div><span style="color:#999;font-size:0.8rem">无管理权限</span></div></div>';
+            }).join('');
+        return;
+    }
+    el.innerHTML = members.map(m => {
+        const name = m.card || m.nickname || m.user_id;
+        const isOwner = m.role === 'owner';
+        const isAdmin = m.role === 'admin';
+        const roleTag = isOwner ? '<span style="color:#f90;font-size:0.75rem">群主</span> '
+            : isAdmin ? '<span style="color:#090;font-size:0.75rem">管理</span> ' : '';
+        const canOperate = m.user_id !== myUserId
+            && (myRole === 'owner' || (myRole === 'admin' && !isOwner && !isAdmin));
+        return '<div class="msg-item" style="display:flex;justify-content:space-between;align-items:center">'
+            + '<div><div class="msg-meta">' + (m.user_id === myUserId ? '<span style="color:#f90;font-size:0.75rem">👈 我 </span>' : '') + roleTag + escapeHtml(name) + ' (' + m.user_id + ')</div></div>'
+            + '<div>'
+            + (m.user_id === myUserId
+                ? '<span style="color:#999;font-size:0.8rem">不能操作自己</span>'
+                : !canOperate
+                ? '<span style="color:#999;font-size:0.8rem">不能操作' + (isOwner ? '群主' : '管理') + '</span>'
+                : '<input type="number" id="banMin_' + m.user_id + '" value="10" min="1" max="43200" style="width:55px;padding:2px 4px;font-size:0.8rem;border:1px solid #ddd;border-radius:4px">分'
+                + '<button onclick="banMember(' + m.user_id + ',document.getElementById(\'banMin_' + m.user_id + '\').value*60)" style="background:#f90;padding:4px 10px;font-size:0.8rem;margin:0 2px">禁言</button>'
+                + '<button onclick="banMember(' + m.user_id + ',0)" style="background:#07c160;padding:4px 10px;font-size:0.8rem;margin:0 2px">解禁</button>')
+            + '</div></div>';
+    }).join('');
+}
+
+async function banMember(user_id, duration) {
+    if (!selectedGroupId) return;
+    const label = duration === 0 ? '解禁' : '禁言';
+    const resp = await fetch('/api/group/ban', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group_id: selectedGroupId, user_id, duration})
+    });
+    const data = await resp.json();
+    showToast(data.status === 'ok' ? label + '成功' : label + '失败: ' + (data.msg || ''));
+    loadGroupMembers();
+}
+
+async function toggleWholeBan(enable) {
+    if (!selectedGroupId) { showToast('请先选择群'); return; }
+    const resp = await fetch('/api/group/whole_ban', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group_id: selectedGroupId, enable})
+    });
+    const data = await resp.json();
+    showToast(data.status === 'ok' ? (enable ? '已开启全员禁言' : '已关闭全员禁言') : '操作失败');
+}
+
+// ==================== 初始化 ====================
+loadMyInfo();
+loadFriends();
+loadGroups();
+loadFriendRequests();
+loadDoubtRequests();
+loadMessages();
+setInterval(loadMessages, 3000);
+</script>
+</body>
+</html>
