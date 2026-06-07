@@ -84,8 +84,8 @@
                 <button type="button" class="active" data-type="private">私聊</button>
                 <button type="button" data-type="group">群聊</button>
             </div>
-            <input type="number" id="targetId" value="1409710" placeholder="目标 QQ 号">
-            <input type="number" id="groupId" value="" placeholder="群号" style="display:none">
+            <select id="targetId" style="width:100%"><option value="">-- 选择好友 --</option></select>
+            <select id="groupId" style="width:100%;display:none"><option value="">-- 选择群 --</option></select>
             <textarea id="msgInput" placeholder="输入消息内容..."></textarea>
             <div class="image-picker">
                 <input type="file" id="imageInput" accept="image/*" style="display:none">
@@ -185,6 +185,10 @@ function switchPage(name, el) {
     document.getElementById('page-' + name).classList.add('active');
     el.classList.add('active');
     if (name === 'groupmgmt') loadGroupMgmt();
+    if (name === 'msg') {
+        if (currentType === 'private') loadFriendDropdown();
+        else loadGroupDropdown();
+    }
 }
 
 // ==================== 通用 ====================
@@ -197,6 +201,8 @@ document.getElementById('typeSelector').addEventListener('click', (e) => {
     e.target.classList.add('active');
     document.getElementById('targetId').style.display = currentType === 'private' ? 'block' : 'none';
     document.getElementById('groupId').style.display = currentType === 'group' ? 'block' : 'none';
+    if (currentType === 'private') loadFriendDropdown();
+    else loadGroupDropdown();
 });
 
 function showToast(msg) {
@@ -217,7 +223,7 @@ function pickFriend(id, name) {
     currentType = 'private';
     document.querySelectorAll('#typeSelector button').forEach(b => b.classList.remove('active'));
     document.querySelector('#typeSelector button[data-type="private"]').classList.add('active');
-    document.getElementById('targetId').value = id;
+    loadFriendDropdown().then(() => { document.getElementById('targetId').value = id; });
     document.getElementById('targetId').style.display = 'block';
     document.getElementById('groupId').style.display = 'none';
     document.getElementById('msgInput').focus();
@@ -229,11 +235,45 @@ function pickGroup(id, name) {
     currentType = 'group';
     document.querySelectorAll('#typeSelector button').forEach(b => b.classList.remove('active'));
     document.querySelector('#typeSelector button[data-type="group"]').classList.add('active');
-    document.getElementById('groupId').value = id;
+    loadGroupDropdown().then(() => { document.getElementById('groupId').value = id; });
     document.getElementById('groupId').style.display = 'block';
     document.getElementById('targetId').style.display = 'none';
     document.getElementById('msgInput').focus();
     showToast('已选择: ' + name);
+}
+
+async function loadFriendDropdown() {
+    const sel = document.getElementById('targetId');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">-- 选择好友 --</option>';
+    const resp = await fetch('/api/friends');
+    const data = await resp.json();
+    if (data.status === 'ok' && data.data.length) {
+        data.data.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f.user_id;
+            opt.textContent = (f.nickname || '未知') + ' (' + f.user_id + ')';
+            sel.appendChild(opt);
+        });
+    }
+    if (prev) sel.value = prev;
+}
+
+async function loadGroupDropdown() {
+    const sel = document.getElementById('groupId');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">-- 选择群 --</option>';
+    const resp = await fetch('/api/groups');
+    const data = await resp.json();
+    if (data.status === 'ok' && data.data.length) {
+        data.data.forEach(g => {
+            const opt = document.createElement('option');
+            opt.value = g.group_id;
+            opt.textContent = (g.group_name || '未知') + ' (' + g.group_id + ')';
+            sel.appendChild(opt);
+        });
+    }
+    if (prev) sel.value = prev;
 }
 
 // ==================== 消息收发 ====================
@@ -331,10 +371,11 @@ document.getElementById('sendForm').addEventListener('submit', async (e) => {
     let payload;
     if (currentType === 'group') {
         const group_id = parseInt(document.getElementById('groupId').value);
-        if (!group_id) { showToast('请输入群号'); return; }
+        if (!group_id) { showToast('请选择群'); return; }
         payload = {msg_type: 'group', group_id, message, image_base64: selectedImage || ''};
     } else {
         const target_id = parseInt(document.getElementById('targetId').value);
+        if (!target_id) { showToast('请选择好友'); return; }
         payload = {msg_type: 'private', target_id, message, image_base64: selectedImage || ''};
     }
 
@@ -577,6 +618,7 @@ async function toggleWholeBan(enable) {
 loadMyInfo();
 loadFriends();
 loadGroups();
+loadFriendDropdown();
 loadFriendRequests();
 loadDoubtRequests();
 loadMessages();

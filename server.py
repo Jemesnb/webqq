@@ -194,7 +194,9 @@ def send():
         payload = {"group_id": target_id, "message": full_message}
         print("SEND group {}: {} img={}".format(target_id, full_message[:60], bool(image_b64)))
     else:
-        target_id = data.get("target_id", 1409710)
+        target_id = data.get("target_id")
+        if not target_id:
+            return jsonify({"status": "error", "msg": "missing target_id"}), 400
         url = NAPCAT_API.rstrip("/") + "/send_private_msg"
         payload = {"user_id": target_id, "message": full_message}
         print("SEND private {}: {} img={}".format(target_id, full_message[:60], bool(image_b64)))
