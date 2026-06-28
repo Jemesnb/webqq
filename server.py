@@ -6,20 +6,25 @@ import json
 import sqlite3
 import os
 import base64
-import html
 from datetime import datetime
 from urllib import request as urllib_request, error as urllib_error
 
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify, render_template, Response
 
+load_dotenv()
 app = Flask(__name__)
-DB_PATH = os.path.join(os.path.dirname(__file__), "qq_relay.db")
+DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "qq_relay.db"))
 
-NAPCAT_API = "http://127.0.0.1:5700"
-NAPCAT_TOKEN = "11"
+NAPCAT_API = os.environ.get("NAPCAT_API")
+NAPCAT_TOKEN = os.environ.get("NAPCAT_TOKEN")
 
-HTTP_USER = "dengjiewei"
-HTTP_PASS = "dhd781102"
+HTTP_USER = os.environ.get("HTTP_USER", "")
+HTTP_PASS = os.environ.get("HTTP_PASS", "")
+
+if not NAPCAT_API or not NAPCAT_TOKEN or not HTTP_USER or not HTTP_PASS:
+    print("检查环境变量文件是否重命名为 .env，并复制到同目录下")
+    print("或检查 NAPCAT_API, NAPCAT_TOKEN, HTTP_USER, HTTP_PASS 是否已经填写")
 
 
 def napcat_api(path, method="GET", payload=None):
@@ -440,4 +445,7 @@ def index():
 
 if __name__ == "__main__":
     print("QQ Web Server starting...")
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("DEBUG", "true").lower() == "true"
+    app.run(host=host, port=port, debug=debug)
