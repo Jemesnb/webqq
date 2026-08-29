@@ -144,7 +144,7 @@
     <div class="nav-item" onclick="switchPage('friendmgmt',this)">好友管理</div>
     <div class="nav-item" onclick="switchPage('groupmgmt',this)">群管理</div>
     <div class="nav-item" onclick="switchPage('groupfiles',this)">群文件</div>
-    <div class="nav-item" onclick="switchPage('traffic',this)">流量</div>
+    {% if traffic_enabled %}<div class="nav-item" onclick="switchPage('traffic',this)">流量</div>{% endif %}
 </div>
 
 <div class="content">
@@ -309,6 +309,7 @@
     </div>
 </div>
 
+{% if traffic_enabled %}
 <!-- ========== 流量页面 ========== -->
 <div class="page" id="page-traffic">
     <div class="page-scroll">
@@ -325,6 +326,7 @@
         </div>
     </div>
 </div>
+{% endif %}
 
 </div>
 
@@ -339,7 +341,7 @@ function switchPage(name, el) {
     el.classList.add('active');
     if (name === 'groupmgmt') loadGroupMgmt();
     if (name === 'groupfiles') loadGroupFileGroups();
-    if (name === 'traffic') loadTraffic();
+    if (name === 'traffic' && document.getElementById('page-traffic')) loadTraffic();
     if (name === 'msg') { loadConvList(); }
     if (name === 'contacts') { loadFriends(); loadGroups(); }
 }

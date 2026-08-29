@@ -36,6 +36,8 @@ DB_RAW_JSON = os.environ.get("DB_RAW_JSON", "1") == "1"
 MSG_RETENTION_DAYS = int(os.environ.get("MSG_RETENTION_DAYS", "0"))
 
 # 流量计费：按天记录应用层进出流量，TRAFFIC_PRICE_PER_GB 单位为 元/GB（GB=10^9 字节）
+# TRAFFIC_ENABLED=1 才开启统计与"流量"页面；默认关闭
+TRAFFIC_ENABLED = os.environ.get("TRAFFIC_ENABLED", "0") == "1"
 TRAFFIC_PRICE_PER_GB = float(os.environ.get("TRAFFIC_PRICE_PER_GB", "0.3"))
 
 if not NAPCAT_API or not NAPCAT_TOKEN or not HTTP_USER or not HTTP_PASS:
@@ -211,6 +213,8 @@ def flush_traffic(in_bytes, out_bytes):
 
 @app.before_request
 def traffic_request_size():
+    if not TRAFFIC_ENABLED:
+        return
     try:
         g.traffic_in = int(request.headers.get("Content-Length") or 0)
     except Exception:
@@ -220,6 +224,8 @@ def traffic_request_size():
 @app.after_request
 def traffic_count(resp):
     try:
+        if not TRAFFIC_ENABLED:
+            return resp
         # 本机看门狗探活（127.0.0.1 GET /）不计入，其余含 NapCat webhook 都算
         if request.remote_addr in ("127.0.0.1", "::1") and request.method == "GET" and request.path == "/":
             return resp
@@ -1108,6 +1114,10 @@ def conversations_agg():
 @app.route("/api/traffic")
 def traffic_stats():
     """流量计费：本月汇总 + 近 30 天明细，费用 = GB × TRAFFIC_PRICE_PER_GB"""
+    if not TRAFFIC_ENABLED:
+        return jsonify({"enabled": False, "month": datetime.now().strftime("%Y-%m"),
+                        "in_bytes": 0, "out_bytes": 0, "total_bytes": 0,
+                        "total_gb": 0, "cost": 0, "price_per_gb": TRAFFIC_PRICE_PER_GB, "days": []})
     conn = get_db()
     rows = conn.execute(
         "SELECT day, in_bytes, out_bytes FROM traffic_daily "
@@ -1127,6 +1137,7 @@ def traffic_stats():
         for r in rows
     ]
     return jsonify({
+        "enabled": True,
         "month": month,
         "in_bytes": m_in, "out_bytes": m_out, "total_bytes": m_total,
         "total_gb": round(m_gb, 3),
@@ -1138,7 +1149,7 @@ def traffic_stats():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", traffic_enabled=TRAFFIC_ENABLED)
 
 
 if __name__ == "__main__":
