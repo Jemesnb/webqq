@@ -752,14 +752,18 @@ def group_file_download():
         return jsonify({"status": "error", "msg": str(e)}), 502
 
     def stream():
+        n = 0
         try:
             while True:
                 chunk = upstream.read(64 * 1024)
                 if not chunk:
                     break
+                n += len(chunk)
                 yield chunk
         finally:
             upstream.close()
+            # QQ CDN → VPS 的入站腿是真实流量消耗（下载=双向），同样计入账单
+            flush_traffic(n, 0)
 
     headers = {
         "Content-Type": upstream.headers.get("Content-Type", "application/octet-stream"),
@@ -976,6 +980,8 @@ def proxy():
         with urllib_request.urlopen(req, timeout=15) as resp:
             data = resp.read()
             ctype = resp.headers.get("Content-Type", "image/jpeg")
+        # QQ CDN → VPS 的入站腿计入流量账单（出站腿由统计中间件按 Content-Length 记）
+        flush_traffic(len(data), 0)
         return Response(data, content_type=ctype)
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)}), 502
