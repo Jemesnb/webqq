@@ -476,7 +476,7 @@ async function loadConvMessages(key) {
         }));
         conv.loaded = true;
         dropDupSent(key, conv.msgs);
-        if (activeConvKey === key) { renderChat(); markSeen(key); loadConvList(); }
+        if (activeConvKey === key) { renderChat(true); markSeen(key); loadConvList(); }
     } catch(e) { /* 网络错误忽略 */ }
 }
 
@@ -630,7 +630,7 @@ function openConv(key) {
     document.getElementById('chatTitle').textContent = conv.name;
     document.getElementById('chatSub').textContent = conv.type === 'g' ? '群聊 · ' + conv.id : '好友 · ' + conv.id;
     document.getElementById('chatInputBar').style.display = 'block';
-    renderChat();
+    renderChat(true);
     loadConvList();
     // 点击会话：加载该会话历史 + 标记已读
     loadConvMessages(key);
@@ -695,12 +695,14 @@ function renderMessage(text) {
     return html || '&nbsp;';
 }
 
-function renderChat() {
+function renderChat(forceBottom) {
     const body = document.getElementById('chatBody');
     if (!activeConvKey) { body.innerHTML = '<div class="empty-chat">请选择左侧联系人开始聊天</div>'; return; }
     const conv = ensureConv(activeConvKey);
     const msgs = getConvMessages(activeConvKey);
     if (!msgs.length) { body.innerHTML = '<div class="empty-chat">暂无消息，打个招呼吧</div>'; return; }
+    // 往上翻历史时不要拽回底部：仅当本来就在底部附近（或发消息/打开会话等强制场景）才滚底
+    const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
     body.innerHTML = msgs.map(m => {
         const align = m.mine ? 'right' : 'left';
         const senderLabel = (!m.mine && conv.type === 'g' && m.sender_name) ? '<div class="sender-label">' + escapeHtml(m.sender_name) + '</div>' : '';
@@ -723,7 +725,7 @@ function renderChat() {
             + '<div class="bubble-time">' + escapeHtml(m.time) + '</div>'
             + '</div></div>';
     }).join('');
-    body.scrollTop = body.scrollHeight;
+    if (forceBottom || nearBottom) body.scrollTop = body.scrollHeight;
 }
 
 // ==================== 引用回复 ====================
@@ -901,7 +903,7 @@ async function sendFace(src) {
                 time: data.time || nowStr()
             });
             bumpConvAggLocal(activeConvKey, sentMsgs[sentMsgs.length - 1]);
-            renderChat();
+            renderChat(true);
             loadConvList();
             showToast('已发送表情');
         } else {
@@ -1013,7 +1015,7 @@ async function sendChat() {
         document.getElementById('msgInput').value = '';
         removeImage();
         cancelReply();
-        renderChat();
+        renderChat(true);
         loadConvList();
     } else {
         showToast('发送失败: ' + (data.msg || 'unknown'));
