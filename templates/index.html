@@ -76,8 +76,8 @@
     .chat-header > div:not(.avatar) { flex: 1; min-width: 0; }
     .chat-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
     .bubble-row { display: flex; gap: 8px; align-items: flex-end; position: relative; }
-    .reply-btn { position: absolute; top: -10px; right: 0; background: #fff; border: 1px solid #e0e0e0; color: #666; font-size: 0.68rem; padding: 1px 6px; border-radius: 4px; cursor: pointer; display: none; z-index: 5; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .bubble-row:hover .reply-btn { display: block; }
+    .reply-btn { position: absolute; top: -10px; right: 0; background: #fff; border: 1px solid #d0d0d0; color: #666; font-size: 0.68rem; padding: 1px 6px; border-radius: 4px; cursor: pointer; display: block; z-index: 5; box-shadow: 0 1px 3px rgba(0,0,0,0.1); opacity: 0.55; }
+    .bubble-row:hover .reply-btn { opacity: 1; border-color: #07c160; color: #07c160; }
     .reply-bar { display: flex; align-items: center; gap: 8px; background: #f0f0f0; border-left: 3px solid #07c160; border-radius: 4px; padding: 5px 10px; margin-bottom: 6px; font-size: 0.78rem; color: #666; }
     .reply-bar .reply-info { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .reply-bar .reply-cancel { background: none; border: none; color: #999; font-size: 0.9rem; cursor: pointer; }
@@ -97,6 +97,11 @@
     .notice-text { font-size: 0.88rem; color: #333; line-height: 1.55; word-break: break-word; white-space: pre-wrap; }
     .notice-img { max-width: 200px; border-radius: 4px; margin-top: 6px; display: block; }
     .notice-img-fallback { display: inline-block; padding: 6px 12px; background: #f0f0f0; color: #999; border-radius: 4px; font-size: 0.8rem; margin-top: 6px; }
+    .file-item { padding: 7px 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer; font-size: 0.86rem; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-radius: 4px; }
+    .file-item:hover { background: #e8f5e9; }
+    .file-item:last-child { border-bottom: none; }
+    .file-icon { flex-shrink: 0; }
+    .file-meta { color: #999; font-size: 0.72rem; margin-left: auto; }
     .bubble-time { font-size: 0.68rem; color: #aaa; margin-top: 3px; }
     .bubble-row.right .bubble-time { text-align: right; }
     .chat-input { background: #fff; border-top: 1px solid #e0e0e0; padding: 10px 12px; flex-shrink: 0; position: relative; }
@@ -138,6 +143,7 @@
     <div class="nav-item" onclick="switchPage('contacts',this)">通讯录</div>
     <div class="nav-item" onclick="switchPage('friendmgmt',this)">好友管理</div>
     <div class="nav-item" onclick="switchPage('groupmgmt',this)">群管理</div>
+    <div class="nav-item" onclick="switchPage('groupfiles',this)">群文件</div>
 </div>
 
 <div class="content">
@@ -271,6 +277,37 @@
     </div>
 </div>
 
+<!-- ========== 群文件页面 ========== -->
+<div class="page" id="page-groupfiles">
+    <div class="page-scroll">
+        <div class="card">
+            <div class="card-header">
+                <h2>选择群</h2>
+                <button class="btn-refresh" onclick="loadGroupFileGroups()">刷新</button>
+            </div>
+            <select id="groupFileSelect" style="width:100%" onchange="onGroupFileSelect()">
+                <option value="">-- 请选择群 --</option>
+            </select>
+        </div>
+        <div class="card" id="groupFileCard" style="display:none">
+            <div class="card-header">
+                <h2>群文件 <span class="badge badge-group" id="gfCount">0</span></h2>
+                <button class="btn-refresh" onclick="loadGroupFiles()">刷新</button>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+                <button id="gfUploadBtn" onclick="document.getElementById('gfFileInput').click()"
+                    style="background:#07c160;color:#fff;padding:8px 14px;font-size:0.85rem;border:none;border-radius:6px;flex:1">⬆ 上传文件</button>
+                <button onclick="createGroupFolder()"
+                    style="background:#4a90d9;color:#fff;padding:8px 14px;font-size:0.85rem;border:none;border-radius:6px;flex:1">📁 新建文件夹</button>
+            </div>
+            <input type="file" id="gfFileInput" multiple style="display:none" onchange="uploadGroupFiles(this)">
+            <div id="gfMoveBanner" style="display:none;background:#fff7e6;border:1px solid #f90;border-radius:6px;padding:8px;font-size:0.85rem;margin-bottom:8px;color:#a60"></div>
+            <div id="gfBreadcrumb" style="font-size:0.75rem;color:#888;margin-bottom:6px;display:none"></div>
+            <div id="gfList" style="font-size:0.85rem;color:#999">请先选择群</div>
+        </div>
+    </div>
+</div>
+
 </div>
 
 <div class="toast" id="toast"></div>
@@ -283,6 +320,7 @@ function switchPage(name, el) {
     document.getElementById('page-' + name).classList.add('active');
     el.classList.add('active');
     if (name === 'groupmgmt') loadGroupMgmt();
+    if (name === 'groupfiles') loadGroupFileGroups();
     if (name === 'msg') { loadConvList(); }
     if (name === 'contacts') { loadFriends(); loadGroups(); }
 }
@@ -362,6 +400,8 @@ async function loadGroups() {
 // convs: key -> {key, type:'p'|'g', id, name, msgs:[], loaded:bool}   msgs来自DB
 let convs = {};
 let activeConvKey = null;
+// 服务端会话聚合（/api/conversations）：key -> {last_time,last_message,max_id,unread,...}
+let convAgg = {};
 // 我发送的消息（前端本地记录，pending=true 表示还在等 DB 回写）
 let sentMsgs = [];
 // 已读标记持久化：key -> 已读到的最大DB消息id
@@ -390,8 +430,12 @@ function ensureConv(key) {
 
 // 清理 sentMsgs 中已被 DB 落库（self_sent）的消息，避免重复显示
 function dropDupSent(key, dbMsgs) {
-    const dbTexts = new Set(dbMsgs.filter(x => x.mine).map(x => x.message));
-    sentMsgs = sentMsgs.filter(s => !(s.key === key && s.pending && dbTexts.has(s.message)));
+    const dbIds = new Set(dbMsgs.map(x => x.msgid).filter(Boolean));
+    sentMsgs = sentMsgs.filter(s => {
+        if (s.key !== key || !s.pending) return true;
+        if (s.msgid && dbIds.has(s.msgid)) return false;   // 落库行已到，按 rowid 精确清理
+        return !dbMsgs.some(x => x.mine && x.message === s.message);  // 兜底：文本一致
+    });
 }
 
 // 按会话加载近 limit 条消息（点击会话时调用）
@@ -413,7 +457,7 @@ async function loadConvMessages(key) {
         }));
         conv.loaded = true;
         dropDupSent(key, conv.msgs);
-        if (activeConvKey === key) { renderChat(); loadConvList(); }
+        if (activeConvKey === key) { renderChat(); markSeen(key); loadConvList(); }
     } catch(e) { /* 网络错误忽略 */ }
 }
 
@@ -428,25 +472,19 @@ function markSeen(key) {
     }
 }
 
-// 未读数
-function unreadCount(key) {
-    const conv = ensureConv(key);
-    const lastSeen = seenMap[key] || 0;
-    return conv.msgs.filter(m => m.msgid && m.msgid > lastSeen && !m.mine).length;
-}
-
 // 把接收到的消息填充进会话
 function ingestMessages(msgs) {
     let changed = false;
     msgs.forEach(m => {
         const type = m.msg_type === 'group' ? 'g' : 'p';
-        const id = type === 'g' ? m.group_id : m.sender_id;
+        // 私聊里自己发的消息 sender_id 是自己，按 target_id 归属到对方会话
+        const id = type === 'g' ? m.group_id : (m.self_sent && m.target_id ? m.target_id : m.sender_id);
         if (!id) return;
         const key = type + ':' + id;
         const conv = ensureConv(key);
         feedAtName(String(m.sender_id), m.sender_name || '');
-        // 去重：按 id
-        if (!conv.msgs.find(x => x.msgid && x.msgid === m.id)) {
+        // 去重：DB 行 id + NapCat message_id 双层
+        if (!conv.msgs.find(x => (x.msgid && x.msgid === m.id) || (m.msg_id && x.napid && String(x.napid) === String(m.msg_id)))) {
             conv.msgs.push({
                 msgid: m.id,
                 napid: m.msg_id,   // NapCat message_id，用于引用回复
@@ -472,7 +510,10 @@ function getConvMessages(key) {
     const conv = ensureConv(key);
     const recv = conv.msgs.slice();
     const sent = sentMsgs.filter(s => s.key === key).map(s => ({...s, mine: true}));
-    return recv.concat(sent).sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+    return recv.concat(sent).sort((a, b) => {
+        if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+        return (a.msgid || 0) - (b.msgid || 0);  // 同秒消息按 rowid 决胜，防乱序闪烁
+    });
 }
 
 // ==================== 会话列表渲染 ====================
@@ -485,28 +526,35 @@ function switchConvTab(tab, el) {
 
 function loadConvList() {
     const list = document.getElementById('convList');
-    // 好友会话
+    // 联系人缓存提供名字，服务端聚合（convAgg）提供时间/预览/未读
     const friendConvs = friendsCache.map(f => {
         const key = 'p:' + f.user_id;
-        const conv = ensureConv(key);
+        ensureConv(key);
         return { key, type: 'p', name: f.nickname || f.user_id, id: f.user_id };
     });
-    // 群会话
     const groupConvs = groupsCache.map(g => {
         const key = 'g:' + g.group_id;
-        const conv = ensureConv(key);
+        ensureConv(key);
         return { key, type: 'g', name: g.group_name || g.group_id, id: g.group_id };
     });
 
     const items = convTab === 'friends' ? friendConvs : groupConvs;
     if (!items.length) { list.innerHTML = '<div style="padding:20px;color:#999;font-size:0.85rem">暂无联系人</div>'; return; }
 
-    // 排序：有消息的按最后消息时间倒序置顶，无消息的按原顺序放后面
+    // 未读数（本地已读游标可能比服务端聚合新：刚点开时本地即时消红点）
+    const keyInfo = c => {
+        const agg = convAgg[c.key];
+        if (!agg) return { unread: 0, time: '' };
+        let unread = agg.unread;
+        if (unread > 0 && seenMap[c.key] >= agg.max_id) unread = 0;
+        return { unread, time: agg.last_time };
+    };
+    // 排序：未读红点的会话置顶（组内按最后消息时间倒序），点开读完即沉到已读区，下面的顶上来；
+    // 已读有消息的按时间倒序，无消息的垫底保持原顺序
     items.sort((a, b) => {
-        const la = getConvMessages(a.key);
-        const lb = getConvMessages(b.key);
-        const ta = la.length ? la[la.length - 1].time : '';
-        const tb = lb.length ? lb[lb.length - 1].time : '';
+        const ka = keyInfo(a), kb = keyInfo(b);
+        if ((ka.unread > 0) !== (kb.unread > 0)) return ka.unread > 0 ? -1 : 1;
+        const ta = ka.time, tb = kb.time;
         if (ta && tb) return ta < tb ? 1 : (ta > tb ? -1 : 0);
         if (ta) return -1;
         if (tb) return 1;
@@ -514,12 +562,12 @@ function loadConvList() {
     });
 
     list.innerHTML = items.map(c => {
-        const all = getConvMessages(c.key);
-        const last = all[all.length - 1];
-        const preview = last ? (last.mine ? '我: ' : '') + plainText(last.message) : '暂无消息';
-        const time = last ? last.time.slice(11, 16) : '';
+        const agg = convAgg[c.key];
+        const k = keyInfo(c);
+        const preview = agg ? (agg.last_mine ? '我: ' : '') + plainText(agg.last_message) : '暂无消息';
+        const time = k.time ? k.time.slice(11, 16) : '';
         const active = activeConvKey === c.key ? ' active' : '';
-        const unread = unreadCount(c.key);
+        const unread = k.unread;
         const badge = unread > 0
             ? '<span class="unread-badge">' + (unread > 99 ? '99+' : unread) + '</span>'
             : (time ? '<div class="conv-time">' + escapeHtml(time) + '</div>' : '');
@@ -826,11 +874,14 @@ async function sendFace(src) {
                 key: activeConvKey,
                 mine: true,
                 pending: true,
+                msgid: data.id || undefined,
+                napid: data.msg_id || undefined,
                 msg_type: conv.type === 'g' ? 'group' : 'private',
                 sender_name: document.getElementById('myNickname').textContent || '我',
                 message: '[CQ:image,file=' + src + ']',
-                time: nowStr()
+                time: data.time || nowStr()
             });
+            bumpConvAggLocal(activeConvKey, sentMsgs[sentMsgs.length - 1]);
             renderChat();
             loadConvList();
             showToast('已发送表情');
@@ -931,12 +982,15 @@ async function sendChat() {
         sentMsgs.push({
             key: activeConvKey,
             mine: true,
-            pending: true,  // 等 DB 落库后由 ingestMessages 清理
+            pending: true,  // 等 DB 落库后由 dropDupSent 按 rowid 清理
+            msgid: data.id || undefined,
+            napid: data.msg_id || undefined,
             msg_type: conv.type === 'g' ? 'group' : 'private',
             sender_name: document.getElementById('myNickname').textContent || '我',
             message: full,
-            time: nowStr()
+            time: data.time || nowStr()  // 用服务端落库时间，避免浏览器时钟偏差导致乱序
         });
+        bumpConvAggLocal(activeConvKey, sentMsgs[sentMsgs.length - 1]);
         document.getElementById('msgInput').value = '';
         removeImage();
         cancelReply();
@@ -949,18 +1003,54 @@ async function sendChat() {
 
 // ==================== 接收轮询 ====================
 async function pollMessages() {
-    const resp = await fetch('/api/messages?limit=50');
-    const msgs = await resp.json();
-    if (!Array.isArray(msgs)) return;
-    const changed = ingestMessages(msgs);
-    if (activeConvKey && changed) {
-        // 当前打开的会话有新消息：渲染 + 标记已读
-        const conv = ensureConv(activeConvKey);
-        const maxId = conv.msgs.reduce((mx, m) => m.msgid ? Math.max(mx, m.msgid) : mx, 0);
-        if (maxId > (seenMap[activeConvKey] || 0)) { seenMap[activeConvKey] = maxId; saveSeen(); }
-        renderChat();
-    }
-    if (changed) loadConvList();
+    try {
+        const resp = await fetch('/api/messages?limit=50');
+        const msgs = await resp.json();
+        if (Array.isArray(msgs)) {
+            const changed = ingestMessages(msgs);
+            if (activeConvKey && changed) {
+                // 当前打开的会话有新消息：渲染 + 标记已读
+                const conv = ensureConv(activeConvKey);
+                const maxId = conv.msgs.reduce((mx, m) => m.msgid ? Math.max(mx, m.msgid) : mx, 0);
+                if (maxId > (seenMap[activeConvKey] || 0)) { seenMap[activeConvKey] = maxId; saveSeen(); }
+                renderChat();
+            }
+            if (changed) loadConvList();
+        }
+    } catch(e) { /* 网络错误忽略 */ }
+    refreshConvAgg();
+}
+
+// 服务端会话聚合：每会话末条消息/未读数，驱动会话列表动态排序
+async function refreshConvAgg() {
+    try {
+        const resp = await fetch('/api/conversations', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({seen: seenMap})
+        });
+        const list = await resp.json();
+        if (!Array.isArray(list)) return;
+        let newSeen = false;
+        list.forEach(a => {
+            convAgg[a.key] = a;
+            // 首次见到该会话：已读游标初始化为当前 max_id（首载不把历史算成未读）
+            if (!(a.key in seenMap) && a.max_id) { seenMap[a.key] = a.max_id; newSeen = true; }
+        });
+        if (newSeen) saveSeen();
+        loadConvList();
+    } catch(e) { /* 网络错误忽略 */ }
+}
+
+// 刚发出的消息先在本地立即反映到会话条目上，下一轮服务端聚合会覆盖
+function bumpConvAggLocal(key, msg) {
+    const prev = convAgg[key];
+    if (prev && msg.time < prev.last_time) return;
+    convAgg[key] = {
+        key: key, type: msg.msg_type === 'group' ? 'g' : 'p', id: String(key).split(':')[1],
+        max_id: (prev && prev.max_id) || msg.msgid || 0,
+        last_time: msg.time, last_message: msg.message, last_mine: true,
+        unread: prev ? prev.unread : 0
+    };
 }
 
 // ==================== 好友管理 ====================
@@ -1117,6 +1207,255 @@ async function toggleWholeBan(enable) {
     });
     const data = await resp.json();
     showToast(data.status === 'ok' ? (enable ? '已开启全员禁言' : '已关闭全员禁言') : '操作失败');
+}
+
+// ==================== 群文件 ====================
+let currentFileFolder = '/';
+let fileNavStack = [];   // 从根到当前的文件夹路径 [{id, name}]
+let gfFolders = [];      // 当前目录的文件夹列表
+let gfFiles = [];        // 当前目录的文件列表
+let pendingMove = null;  // 待移动文件 {file_id, name, from}
+let fileGroupRole = 'member';
+
+function formatFileSize(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(2) + ' GB';
+}
+
+function formatTs(ts) {
+    if (!ts) return '';
+    const d = new Date(Number(ts) * 1000);
+    const p = x => String(x).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function currentGroupId() {
+    return parseInt(document.getElementById('groupFileSelect').value);
+}
+
+async function loadGroupFileGroups() {
+    const resp = await fetch('/api/groups');
+    const data = await resp.json();
+    const sel = document.getElementById('groupFileSelect');
+    if (data.status !== 'ok' || !data.data.length) { sel.innerHTML = '<option value="">无可用群</option>'; return; }
+    sel.innerHTML = '<option value="">-- 请选择群 --</option>'
+        + data.data.map(g => '<option value="' + g.group_id + '">' + escapeHtml(g.group_name) + ' (' + g.group_id + ')</option>').join('');
+}
+
+function onGroupFileSelect() {
+    fileNavStack = [];
+    pendingMove = null;
+    if (!currentGroupId()) {
+        document.getElementById('groupFileCard').style.display = 'none';
+        return;
+    }
+    document.getElementById('groupFileCard').style.display = 'block';
+    loadGroupFiles('/', true);
+}
+
+function enterGroupFolder(idx) {
+    const f = gfFolders[idx];
+    if (!f) return;
+    fileNavStack.push({id: f.id, name: f.name});
+    loadGroupFiles(f.id);
+}
+
+function jumpToFolder(idx) {
+    fileNavStack = idx < 0 ? [] : fileNavStack.slice(0, idx + 1);
+    loadGroupFiles(idx < 0 ? '/' : fileNavStack[idx].id);
+}
+
+function renderBreadcrumb() {
+    const bc = document.getElementById('gfBreadcrumb');
+    if (currentFileFolder === '/') { bc.style.display = 'none'; return; }
+    bc.style.display = 'block';
+    let html = '<span style="cursor:pointer;color:#07c160" onclick="jumpToFolder(-1)">群文件</span>';
+    fileNavStack.forEach((f, i) => {
+        html += ' / ' + (i === fileNavStack.length - 1 ? escapeHtml(f.name)
+            : '<span style="cursor:pointer;color:#07c160" onclick="jumpToFolder(' + i + ')">' + escapeHtml(f.name) + '</span>');
+    });
+    bc.innerHTML = html;
+}
+
+function renderMoveBanner() {
+    const el = document.getElementById('gfMoveBanner');
+    if (!pendingMove) { el.style.display = 'none'; return; }
+    const sameFolder = pendingMove.from === currentFileFolder;
+    el.style.display = 'block';
+    el.innerHTML = '📦 正在移动「' + escapeHtml(pendingMove.name) + '」 — '
+        + (sameFolder ? '请先进入目标文件夹'
+            : '<button onclick="confirmMoveFile()" style="background:#f90;color:#fff;padding:4px 10px;font-size:0.8rem;margin:0 2px;border:none;border-radius:4px">移动到此处</button>')
+        + '<button onclick="cancelMoveFile()" style="background:#999;color:#fff;padding:4px 10px;font-size:0.8rem;margin:0 2px;border:none;border-radius:4px">取消</button>';
+}
+
+async function loadGroupFiles(folderId, withRole) {
+    const group_id = currentGroupId();
+    const el = document.getElementById('gfList');
+    if (!group_id) { el.innerHTML = '请先选择群'; return; }
+    currentFileFolder = folderId || '/';
+    el.innerHTML = '加载中...';
+    try {
+        const resp = await fetch('/api/group/files?group_id=' + group_id
+            + '&folder_id=' + encodeURIComponent(currentFileFolder) + (withRole ? '&with_role=1' : ''));
+        const data = await resp.json();
+        if (data.status !== 'ok') { el.innerHTML = '加载失败: ' + escapeHtml(data.msg || ''); return; }
+        if (withRole && data.my_role) fileGroupRole = data.my_role;
+        gfFolders = ((data.data && data.data.folders) || []).map(f => ({
+            id: String(f.folder_id || f.id || ''), name: f.folder_name || f.name || '未命名文件夹'
+        }));
+        gfFiles = ((data.data && data.data.files) || []).map(f => ({
+            id: String(f.file_id || f.id || ''), name: f.file_name || f.name || '未命名文件',
+            size: f.size || f.file_size || 0, uploader: f.uploader_name || '未知',
+            uploaderId: f.uploader || f.uploader_id || 0,
+            time: f.modify_time || 0, downloads: f.download_times || 0, busid: f.busid || 102
+        }));
+        document.getElementById('gfCount').textContent = gfFiles.length + gfFolders.length;
+        renderBreadcrumb();
+        renderMoveBanner();
+        if (!gfFolders.length && !gfFiles.length) {
+            el.innerHTML = '<div style="color:#999">暂无群文件</div>';
+            return;
+        }
+        const canManage = fileGroupRole === 'owner' || fileGroupRole === 'admin';
+        const btn = bg => 'background:' + bg + ';color:#fff;padding:3px 9px;font-size:0.8rem;margin-left:4px;border:none;border-radius:4px';
+        let html = gfFolders.map((f, i) =>
+            '<div class="file-item" onclick="enterGroupFolder(' + i + ')">'
+            + '<span class="file-icon">📁</span><span>' + escapeHtml(f.name) + '</span>'
+            + '<span class="file-meta">文件夹 · 点击进入</span></div>'
+        ).join('');
+        html += gfFiles.map((f, i) => {
+            const meta = formatFileSize(f.size) + ' · ' + escapeHtml(f.uploader)
+                + (f.time ? ' · ' + formatTs(f.time) : '') + ' · 下载' + f.downloads + '次';
+            // 管理员/群主可管理所有文件；普通成员只能管理自己上传的
+            const canThis = canManage || (f.uploaderId && Number(f.uploaderId) === Number(myUserId));
+            let btns = '<button onclick="event.stopPropagation();downloadGroupFile(' + i + ')" style="' + btn('#07c160') + '">⬇</button>';
+            if (canThis) {
+                btns += '<button onclick="event.stopPropagation();renameGroupFile(' + i + ')" style="' + btn('#4a90d9') + '">✏</button>'
+                    + '<button onclick="event.stopPropagation();startMoveFile(' + i + ')" style="' + btn('#f90') + '">📦</button>'
+                    + '<button onclick="event.stopPropagation();deleteGroupFile(' + i + ')" style="' + btn('#e5544b') + '">🗑</button>';
+            }
+            return '<div class="file-item" onclick="downloadGroupFile(' + i + ')">'
+                + '<span class="file-icon">📄</span><span style="word-break:break-all">' + escapeHtml(f.name) + '</span>'
+                + '<span class="file-meta">' + meta + '</span>'
+                + '<span style="flex-shrink:0">' + btns + '</span></div>';
+        }).join('');
+        el.innerHTML = html;
+    } catch(e) {
+        el.innerHTML = '加载失败';
+    }
+}
+
+function downloadGroupFile(idx) {
+    const group_id = currentGroupId();
+    const f = gfFiles[idx];
+    if (!group_id || !f) return;
+    // 走后端代理下载：CDN 不带 Content-Disposition，直接开 CDN 链接会存成无后缀的哈希名
+    const a = document.createElement('a');
+    a.href = '/api/group/file_download?group_id=' + group_id
+        + '&file_id=' + encodeURIComponent(f.id)
+        + '&busid=' + f.busid
+        + '&name=' + encodeURIComponent(f.name);
+    a.download = f.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+}
+
+async function renameGroupFile(idx) {
+    const f = gfFiles[idx];
+    const newName = prompt('重命名文件', f.name);
+    if (!newName || newName === f.name) return;
+    const resp = await fetch('/api/group/file/rename', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group_id: currentGroupId(), file_id: f.id, folder_id: currentFileFolder, new_name: newName})
+    });
+    const data = await resp.json();
+    showToast(data.status === 'ok' ? '重命名成功' : '重命名失败: ' + (data.msg || ''));
+    if (data.status === 'ok') loadGroupFiles();
+}
+
+async function deleteGroupFile(idx) {
+    const f = gfFiles[idx];
+    if (!confirm('确定删除文件「' + f.name + '」？此操作不可恢复')) return;
+    const resp = await fetch('/api/group/file/delete', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group_id: currentGroupId(), file_id: f.id})
+    });
+    const data = await resp.json();
+    showToast(data.status === 'ok' ? '删除成功' : '删除失败: ' + (data.msg || ''));
+    if (data.status === 'ok') loadGroupFiles();
+}
+
+function startMoveFile(idx) {
+    const f = gfFiles[idx];
+    pendingMove = {file_id: f.id, name: f.name, from: currentFileFolder};
+    showToast('请进入目标文件夹');
+    renderMoveBanner();
+}
+
+function cancelMoveFile() {
+    pendingMove = null;
+    renderMoveBanner();
+}
+
+async function confirmMoveFile() {
+    if (!pendingMove) return;
+    const resp = await fetch('/api/group/file/move', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group_id: currentGroupId(), file_id: pendingMove.file_id,
+            current_folder_id: pendingMove.from, target_folder_id: currentFileFolder})
+    });
+    const data = await resp.json();
+    showToast(data.status === 'ok' ? '移动成功' : '移动失败: ' + (data.msg || ''));
+    if (data.status === 'ok') pendingMove = null;
+    renderMoveBanner();
+    loadGroupFiles();
+}
+
+async function createGroupFolder() {
+    if (!currentGroupId()) { showToast('请先选择群'); return; }
+    const name = prompt('新文件夹名称');
+    if (!name) return;
+    const resp = await fetch('/api/group/folder/create', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({group_id: currentGroupId(), name})
+    });
+    const data = await resp.json();
+    showToast(data.status === 'ok' ? '文件夹已创建' : '创建失败: ' + (data.msg || ''));
+    if (data.status === 'ok') loadGroupFiles();
+}
+
+async function uploadGroupFiles(input) {
+    const group_id = currentGroupId();
+    const files = Array.from(input.files || []);
+    input.value = '';
+    if (!group_id || !files.length) return;
+    const btn = document.getElementById('gfUploadBtn');
+    btn.disabled = true;
+    btn.textContent = '⬆ 上传中...';
+    let ok = 0, fail = 0;
+    for (const file of files) {
+        const fd = new FormData();
+        fd.append('group_id', group_id);
+        fd.append('folder_id', currentFileFolder);
+        fd.append('file', file);
+        try {
+            const resp = await fetch('/api/group/file/upload', {method: 'POST', body: fd});
+            const data = await resp.json();
+            if (data.status === 'ok') { ok++; }
+            else { fail++; showToast('「' + file.name + '」上传失败: ' + (data.msg || '')); }
+        } catch(e) {
+            fail++;
+            showToast('「' + file.name + '」上传失败');
+        }
+    }
+    btn.disabled = false;
+    btn.textContent = '⬆ 上传文件';
+    showToast('上传完成：成功 ' + ok + ' 个' + (fail ? '，失败 ' + fail + ' 个' : ''));
+    loadGroupFiles();
 }
 
 // ==================== 群公告 ====================

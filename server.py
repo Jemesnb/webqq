@@ -7,14 +7,18 @@ import sqlite3
 import os
 import re
 import base64
+import shutil
+import tempfile
 from datetime import datetime
 from urllib import request as urllib_request, error as urllib_error
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, render_template, Response
 
 load_dotenv()
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 群文件上传上限
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "qq_relay.db"))
 
 NAPCAT_API = os.environ.get("NAPCAT_API")
@@ -93,6 +97,18 @@ def init_db():
         conn.execute("ALTER TABLE received_messages ADD COLUMN target_id INTEGER")
     if "msg_id" not in cols:
         conn.execute("ALTER TABLE received_messages ADD COLUMN msg_id INTEGER")
+    # msg_id 唯一化：先清历史重复行（同 msg_id 保留最小 rowid），再建部分唯一索引
+    # 根治 webhook 重推/双格式/自发消息双写导致的重复消息
+    try:
+        conn.execute(
+            "DELETE FROM received_messages WHERE msg_id IS NOT NULL AND id NOT IN "
+            "(SELECT MIN(id) FROM received_messages WHERE msg_id IS NOT NULL GROUP BY msg_id)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_msgid ON received_messages(msg_id) WHERE msg_id IS NOT NULL"
+        )
+    except Exception as db_err:
+        print("WARN: msg_id unique index setup failed: {}".format(db_err))
     conn.commit()
     conn.close()
 
@@ -124,6 +140,11 @@ def require_auth():
         return authenticate()
     if not check_auth(user, password):
         return authenticate()
+
+
+@app.errorhandler(413)
+def request_too_large(e):
+    return jsonify({"status": "error", "msg": "文件超过上传大小限制(200MB)"}), 413
 
 
 def _extract_reply(rid):
@@ -285,12 +306,19 @@ def webhook():
             sender_name = data.get("sender", {}).get("nickname", "")
             group_id = data.get("group_id") if msg_type == "group" else None
             group_name = data.get("group_name", "") if msg_type == "group" else None
+            # 机器人自己发的消息事件（群聊会推送）也标记 self_sent，并归属到正确会话
+            self_id = data.get("self_id")
+            is_self = sender_id is not None and sender_id == self_id
+            target_id = None
+            if is_self and msg_type == "private":
+                user_id = data.get("user_id")
+                target_id = user_id if user_id != self_id else None
             message = parse_message_to_cq(data)
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             conn = get_db()
             conn.execute(
-                "INSERT INTO received_messages (msg_type, sender_id, sender_name, group_id, group_name, message, raw_json, created_at, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (msg_type, sender_id, sender_name, group_id, group_name, str(message), json.dumps(data, ensure_ascii=False), now, data.get("message_id")),
+                "INSERT OR IGNORE INTO received_messages (msg_type, sender_id, sender_name, group_id, group_name, message, raw_json, created_at, self_sent, target_id, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (msg_type, sender_id, sender_name, group_id, group_name, str(message), json.dumps(data, ensure_ascii=False), now, 1 if is_self else 0, target_id, data.get("message_id")),
             )
             conn.commit()
             conn.close()
@@ -338,7 +366,7 @@ def send():
     elif image_url:
         image_cq = "[CQ:image,file={}]".format(image_url)
     if message and image_cq:
-        full_message = message + image_cq
+        full_message = message + " " + image_cq
     elif image_cq:
         full_message = image_cq
     else:
@@ -383,6 +411,9 @@ def send():
         with urllib_request.urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read().decode("utf-8"))
             # 发送成功后，也将消息写入 received_messages 表（这样轮询能拿到自己发的消息）
+            nap_data = result.get("data") if isinstance(result, dict) else None
+            saved_msg_id = nap_data.get("message_id") if isinstance(nap_data, dict) else None
+            row_id, row_time = None, None
             try:
                 my_info_res, _ = napcat_api("get_login_info", method="POST", payload={})
                 my_data = (my_info_res.get("data") if isinstance(my_info_res, dict) else my_info_res) or {}
@@ -390,8 +421,8 @@ def send():
                 my_nick = my_data.get("nickname", "我")
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn = get_db()
-                conn.execute(
-                    "INSERT INTO received_messages (msg_type, sender_id, sender_name, group_id, group_name, message, raw_json, created_at, self_sent, target_id, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO received_messages (msg_type, sender_id, sender_name, group_id, group_name, message, raw_json, created_at, self_sent, target_id, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
                     (msg_type, my_uid, my_nick,
                      target_id if msg_type == "group" else None,
                      None,  # 群名暂不填
@@ -399,13 +430,22 @@ def send():
                      json.dumps({"self_sent": True, "message": full_message}, ensure_ascii=False),
                      now,
                      target_id if msg_type == "private" else None,
-                     result.get("message_id") if isinstance(result, dict) else None),
+                     saved_msg_id),
                 )
                 conn.commit()
+                if cur.rowcount == 0 and saved_msg_id:
+                    # 同 msg_id 已由 webhook 落库：沿用已有行，保证前端乐观副本与落库行 id 一致
+                    row = conn.execute(
+                        "SELECT id, created_at FROM received_messages WHERE msg_id=?", (saved_msg_id,)
+                    ).fetchone()
+                    row_id, row_time = (row[0], row[1]) if row else (cur.lastrowid, now)
+                else:
+                    row_id, row_time = cur.lastrowid, now
                 conn.close()
             except Exception as db_err:
                 print("WARN: failed to save sent message to DB: {}".format(db_err))
-            return jsonify({"status": "ok", "napcat_response": result})
+            return jsonify({"status": "ok", "napcat_response": result, "id": row_id,
+                            "time": row_time, "msg_id": saved_msg_id})
     except urllib_error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         return jsonify({"status": "error", "msg": body}), 502
@@ -436,6 +476,30 @@ def friends():
     return jsonify({"status": "ok", "data": data or []})
 
 
+def get_login_user_id():
+    """获取当前登录 QQ 的 user_id"""
+    result, _ = napcat_api("get_login_info", method="POST", payload={})
+    if not result:
+        result, _ = napcat_api("get_login_info")
+    data = (result or {}).get("data") if isinstance(result, dict) else result
+    return data.get("user_id") if isinstance(data, dict) else None
+
+
+def get_my_group_role(group_id):
+    """获取机器人自己在群内的角色（owner/admin/member）"""
+    my_id = get_login_user_id()
+    if not my_id:
+        return "member"
+    result, err = napcat_api("get_group_member_list", method="POST", payload={"group_id": group_id})
+    if err:
+        return "member"
+    data = result.get("data") if isinstance(result, dict) else result
+    for m in data or []:
+        if isinstance(m, dict) and m.get("user_id") == my_id:
+            return m.get("role", "member")
+    return "member"
+
+
 @app.route("/api/groups")
 def groups():
     result, err = napcat_api("get_group_list", method="POST", payload={})
@@ -459,11 +523,7 @@ def group_members():
 
     # Get current user's role in this group
     my_role = "member"
-    login_result, _ = napcat_api("get_login_info", method="POST", payload={})
-    if not login_result:
-        login_result, _ = napcat_api("get_login_info")
-    ld = (login_result or {}).get("data") if isinstance(login_result, dict) else login_result
-    my_id = ld.get("user_id") if isinstance(ld, dict) else None
+    my_id = get_login_user_id()
     if my_id and isinstance(data, list):
         for m in data:
             if isinstance(m, dict) and m.get("user_id") == my_id:
@@ -512,6 +572,189 @@ def group_notices():
         return jsonify({"status": "error", "msg": err}), 502
     data = result.get("data") if isinstance(result, dict) else result
     return jsonify({"status": "ok", "data": data or []})
+
+
+@app.route("/api/group/files")
+def group_files():
+    """获取群文件列表（根目录走 get_group_root_files，子目录走 get_group_files_by_folder）
+
+    实测这版 NapCat 的 get_group_files_by_folder 在根目录(/)不返回 folders，
+    必须用 get_group_root_files；子目录 by_folder 正常。子目录 folder_id 自带 / 前缀。
+    """
+    group_id = request.args.get("group_id")
+    folder_id = request.args.get("folder_id", "/")
+    if not group_id:
+        return jsonify({"status": "error", "msg": "missing group_id"}), 400
+    if folder_id == "/":
+        action = "get_group_root_files"
+        payload = {"group_id": str(group_id), "file_count": 200}
+    else:
+        action = "get_group_files_by_folder"
+        payload = {"group_id": str(group_id), "folder_id": folder_id, "file_count": 200}
+    result, err = napcat_api(action, method="POST", payload=payload)
+    if err:
+        return jsonify({"status": "error", "msg": err}), 502
+    data = result.get("data") if isinstance(result, dict) else result
+    if not isinstance(data, dict):
+        data = {"files": [], "folders": []}
+    resp = {"status": "ok", "data": data}
+    # with_role=1 时附带机器人角色，用于前端控制文件管理按钮权限（避免每次翻目录都查角色）
+    if request.args.get("with_role"):
+        resp["my_role"] = get_my_group_role(group_id)
+    return jsonify(resp)
+
+
+@app.route("/api/group/file_url")
+def group_file_url():
+    """获取群文件下载链接（代理 NapCat get_group_file_url）"""
+    group_id = request.args.get("group_id")
+    file_id = request.args.get("file_id")
+    busid = request.args.get("busid", 102)
+    if not group_id or not file_id:
+        return jsonify({"status": "error", "msg": "missing params"}), 400
+    result, err = napcat_api("get_group_file_url", method="POST", payload={
+        "group_id": str(group_id), "file_id": file_id, "busid": int(busid)
+    })
+    if err:
+        return jsonify({"status": "error", "msg": err}), 502
+    data = result.get("data") if isinstance(result, dict) else result
+    url = data.get("url") if isinstance(data, dict) else None
+    if not url:
+        return jsonify({"status": "error", "msg": "no url"}), 502
+    return jsonify({"status": "ok", "url": url})
+
+
+@app.route("/api/group/file_download")
+def group_file_download():
+    """代理下载群文件（流式转发 QQ CDN 内容）
+
+    QQ CDN 不带 Content-Disposition，浏览器直接打开会存成无后缀的哈希名，
+    所以由服务器转发并强制 attachment + 列表里的原始文件名
+    """
+    group_id = request.args.get("group_id")
+    file_id = request.args.get("file_id")
+    busid = request.args.get("busid", 102)
+    name = request.args.get("name", "file")
+    if not group_id or not file_id:
+        return jsonify({"status": "error", "msg": "missing params"}), 400
+    name = re.sub(r'[\r\n"\x00-\x1f]', "", name).strip() or "file"
+    result, err = napcat_api("get_group_file_url", method="POST", payload={
+        "group_id": str(group_id), "file_id": file_id, "busid": int(busid)
+    })
+    if err:
+        return jsonify({"status": "error", "msg": err}), 502
+    data = result.get("data") if isinstance(result, dict) else result
+    url = data.get("url") if isinstance(data, dict) else None
+    if not url:
+        return jsonify({"status": "error", "msg": "no url"}), 502
+    try:
+        upstream = urllib_request.urlopen(urllib_request.Request(
+            url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://qun.qq.com/"}), timeout=30)
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)}), 502
+
+    def stream():
+        try:
+            while True:
+                chunk = upstream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    headers = {
+        "Content-Type": upstream.headers.get("Content-Type", "application/octet-stream"),
+        "Content-Disposition": "attachment; filename*=UTF-8''" + quote(name),
+    }
+    length = upstream.headers.get("Content-Length")
+    if length:
+        headers["Content-Length"] = length
+    return Response(stream(), headers=headers)
+
+
+@app.route("/api/group/file/upload", methods=["POST"])
+def group_file_upload():
+    """上传群文件（multipart：file + group_id + folder_id）
+
+    Flask 与 NapCat 同机：先落盘临时文件，再把本地路径交给 NapCat 上传
+    """
+    group_id = request.form.get("group_id")
+    folder_id = request.form.get("folder_id", "/")
+    f = request.files.get("file")
+    if not group_id or not f or not f.filename:
+        return jsonify({"status": "error", "msg": "missing params"}), 400
+    fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(f.filename)[1])
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            shutil.copyfileobj(f.stream, tmp)
+        payload = {"group_id": str(group_id), "file": "file://" + tmp_path, "name": f.filename}
+        if folder_id and folder_id != "/":
+            payload["folder"] = folder_id
+        result, err = napcat_api("upload_group_file", method="POST", payload=payload)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+    if err:
+        return jsonify({"status": "error", "msg": err}), 502
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/group/file/delete", methods=["POST"])
+def group_file_delete():
+    data = request.get_json(silent=True)
+    if not data or "group_id" not in data or "file_id" not in data:
+        return jsonify({"status": "error", "msg": "missing params"}), 400
+    result, err = napcat_api("delete_group_file", method="POST", payload={
+        "group_id": str(data["group_id"]), "file_id": data["file_id"]
+    })
+    if err:
+        return jsonify({"status": "error", "msg": err}), 502
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/group/file/rename", methods=["POST"])
+def group_file_rename():
+    data = request.get_json(silent=True)
+    if not data or not all(k in data for k in ("group_id", "file_id", "folder_id", "new_name")):
+        return jsonify({"status": "error", "msg": "missing params"}), 400
+    result, err = napcat_api("rename_group_file", method="POST", payload={
+        "group_id": str(data["group_id"]), "file_id": data["file_id"],
+        "current_parent_directory": data["folder_id"], "new_name": data["new_name"]
+    })
+    if err:
+        return jsonify({"status": "error", "msg": err}), 502
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/group/file/move", methods=["POST"])
+def group_file_move():
+    data = request.get_json(silent=True)
+    if not data or not all(k in data for k in ("group_id", "file_id", "current_folder_id", "target_folder_id")):
+        return jsonify({"status": "error", "msg": "missing params"}), 400
+    result, err = napcat_api("move_group_file", method="POST", payload={
+        "group_id": str(data["group_id"]), "file_id": data["file_id"],
+        "current_parent_directory": data["current_folder_id"],
+        "target_parent_directory": data["target_folder_id"]
+    })
+    if err:
+        return jsonify({"status": "error", "msg": err}), 502
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/group/folder/create", methods=["POST"])
+def group_folder_create():
+    data = request.get_json(silent=True)
+    if not data or "group_id" not in data or not data.get("name"):
+        return jsonify({"status": "error", "msg": "missing params"}), 400
+    result, err = napcat_api("create_group_file_folder", method="POST", payload={
+        "group_id": str(data["group_id"]), "folder_name": data["name"]
+    })
+    if err:
+        return jsonify({"status": "error", "msg": err}), 502
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/friend_requests/doubt")
@@ -650,17 +893,17 @@ def get_messages():
         # 按会话过滤：私聊匹配 sender_id 或 target_id（对方发的/我发给对方的）
         if msg_type == "group":
             rows = conn.execute(
-                "SELECT id, msg_type, sender_id, sender_name, group_id, group_name, message, created_at, self_sent, msg_id FROM received_messages WHERE msg_type='group' AND group_id=? ORDER BY id DESC LIMIT ?",
+                "SELECT id, msg_type, sender_id, sender_name, group_id, group_name, message, created_at, self_sent, target_id, msg_id FROM received_messages WHERE msg_type='group' AND group_id=? ORDER BY id DESC LIMIT ?",
                 (peer_id, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, msg_type, sender_id, sender_name, group_id, group_name, message, created_at, self_sent, msg_id FROM received_messages WHERE msg_type='private' AND (sender_id=? OR target_id=?) ORDER BY id DESC LIMIT ?",
+                "SELECT id, msg_type, sender_id, sender_name, group_id, group_name, message, created_at, self_sent, target_id, msg_id FROM received_messages WHERE msg_type='private' AND (sender_id=? OR target_id=?) ORDER BY id DESC LIMIT ?",
                 (peer_id, peer_id, limit),
             ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT id, msg_type, sender_id, sender_name, group_id, group_name, message, created_at, self_sent, msg_id FROM received_messages ORDER BY id DESC LIMIT ?",
+            "SELECT id, msg_type, sender_id, sender_name, group_id, group_name, message, created_at, self_sent, target_id, msg_id FROM received_messages ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
     conn.close()
@@ -675,10 +918,87 @@ def get_messages():
             "message": r["message"],
             "time": r["created_at"],
             "self_sent": bool(r["self_sent"]),
+            "target_id": r["target_id"],
             "msg_id": r["msg_id"],
         }
         for r in rows
     ])
+
+
+@app.route("/api/conversations", methods=["POST"])
+def conversations_agg():
+    """会话聚合：每个会话的末条消息 + 未读数（供前端会话列表动态排序）
+
+    入参 JSON: {"seen": {"g:群号": 已读最大rowid, "p:QQ号": ...}}
+    未读 = self_sent=0 且 id > 该会话已读游标 的条数；扫描窗口限定最近 1000 行
+    （游标老于窗口的极端积压会少算，前端显示封顶 99+，可接受）
+    """
+    body = request.get_json(silent=True) or {}
+    seen = body.get("seen") or {}
+    g_seen, p_seen = {}, {}
+    for k, v in seen.items():
+        try:
+            cursor = int(v)
+        except Exception:
+            continue
+        if str(k).startswith("g:"):
+            g_seen[int(str(k)[2:])] = cursor
+        elif str(k).startswith("p:"):
+            p_seen[int(str(k)[2:])] = cursor
+
+    conn = get_db()
+    out = []
+    # ---- 群会话末条 ----
+    rows = conn.execute(
+        "SELECT group_id, id, self_sent, message, created_at FROM received_messages "
+        "WHERE msg_type='group' AND id IN "
+        "(SELECT MAX(id) FROM received_messages WHERE msg_type='group' GROUP BY group_id)"
+    ).fetchall()
+    for r in rows:
+        out.append({"key": "g:%s" % r["group_id"], "type": "g", "id": r["group_id"],
+                    "max_id": r["id"], "last_time": r["created_at"],
+                    "last_message": r["message"], "last_mine": bool(r["self_sent"]),
+                    "unread": 0})
+    # ---- 私聊会话末条（自己发的按 target_id 归属对方）----
+    rows = conn.execute(
+        "SELECT CASE WHEN self_sent=1 THEN target_id ELSE sender_id END AS peer, "
+        "id, self_sent, message, created_at FROM received_messages "
+        "WHERE msg_type='private' AND id IN "
+        "(SELECT MAX(id) FROM received_messages WHERE msg_type='private' "
+        "GROUP BY CASE WHEN self_sent=1 THEN target_id ELSE sender_id END)"
+    ).fetchall()
+    for r in rows:
+        if r["peer"] is None:
+            continue
+        out.append({"key": "p:%s" % r["peer"], "type": "p", "id": r["peer"],
+                    "max_id": r["id"], "last_time": r["created_at"],
+                    "last_message": r["message"], "last_mine": bool(r["self_sent"]),
+                    "unread": 0})
+
+    # ---- 未读数：增量窗口扫描，按各会话已读游标精确计数 ----
+    all_cursors = [c for c in list(g_seen.values()) + list(p_seen.values()) if c > 0]
+    if all_cursors:
+        global_max = conn.execute("SELECT COALESCE(MAX(id), 0) FROM received_messages").fetchone()[0]
+        floor = max(min(all_cursors), global_max - 1000)
+        rows = conn.execute(
+            "SELECT id, msg_type, group_id, sender_id, target_id FROM received_messages "
+            "WHERE self_sent=0 AND id > ? ORDER BY id", (floor,)
+        ).fetchall()
+        by_key = {}
+        for r in rows:
+            if r["msg_type"] == "group":
+                key = "g:%s" % r["group_id"] if r["group_id"] else None
+                cursor = g_seen.get(r["group_id"], 0)
+            else:
+                peer = r["target_id"] if r["target_id"] else r["sender_id"]
+                key = "p:%s" % peer if peer else None
+                cursor = p_seen.get(peer, 0)
+            if key and r["id"] > cursor:
+                by_key[key] = by_key.get(key, 0) + 1
+        for item in out:
+            item["unread"] = by_key.get(item["key"], 0)
+    conn.close()
+    return jsonify(out)
 
 
 @app.route("/")
