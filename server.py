@@ -9,12 +9,14 @@ import re
 import base64
 import shutil
 import tempfile
-from datetime import datetime
+import threading
+import time
+from datetime import datetime, timedelta
 from urllib import request as urllib_request, error as urllib_error
 from urllib.parse import quote
 
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify, render_template, Response
+from flask import Flask, request, jsonify, render_template, Response, g
 
 load_dotenv()
 app = Flask(__name__)
@@ -26,6 +28,17 @@ NAPCAT_TOKEN = os.environ.get("NAPCAT_TOKEN")
 
 HTTP_USER = os.environ.get("HTTP_USER", "")
 HTTP_PASS = os.environ.get("HTTP_PASS", "")
+
+# 小盘机器瘦身开关（默认关闭，行为与老版本一致）
+# DB_RAW_JSON=0          新消息不存完整事件 JSON（省 ~70% 空间；raw_json 本就只写不读）
+# MSG_RETENTION_DAYS=N   自动删除 N 天前的消息（0=永久保留），后台线程每小时清一次
+DB_RAW_JSON = os.environ.get("DB_RAW_JSON", "1") == "1"
+MSG_RETENTION_DAYS = int(os.environ.get("MSG_RETENTION_DAYS", "0"))
+
+# 流量计费：按天记录应用层进出流量，TRAFFIC_PRICE_PER_GB 单位为 元/GB（GB=10^9 字节）
+# TRAFFIC_ENABLED=1 才开启统计与"流量"页面；默认关闭
+TRAFFIC_ENABLED = os.environ.get("TRAFFIC_ENABLED", "0") == "1"
+TRAFFIC_PRICE_PER_GB = float(os.environ.get("TRAFFIC_PRICE_PER_GB", "0.3"))
 
 if not NAPCAT_API or not NAPCAT_TOKEN or not HTTP_USER or not HTTP_PASS:
     print("检查环境变量文件是否重命名为 .env，并复制到同目录下")
@@ -83,6 +96,11 @@ def init_db():
             flag TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS traffic_daily (
+            day TEXT PRIMARY KEY,
+            in_bytes INTEGER NOT NULL DEFAULT 0,
+            out_bytes INTEGER NOT NULL DEFAULT 0
         )
     """)
     # Add columns if missing (upgrade old DB)
@@ -116,6 +134,36 @@ def init_db():
 init_db()
 
 
+def cleanup_old_messages():
+    """按 MSG_RETENTION_DAYS 删除过期消息（0=不启用）。
+
+    只 DELETE 不 VACUUM：SQLite 会复用释放出来的页，文件大小趋于稳定，
+    避免 VACUUM 需要的双倍临时空间（小盘机器受不起）。
+    """
+    if not MSG_RETENTION_DAYS:
+        return
+    cutoff = (datetime.now() - timedelta(days=MSG_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db()
+    n = conn.execute("DELETE FROM received_messages WHERE created_at < ?", (cutoff,)).rowcount
+    conn.commit()
+    conn.close()
+    if n:
+        print("cleanup: removed {} messages older than {} days".format(n, MSG_RETENTION_DAYS))
+
+
+def _retention_loop():
+    while True:
+        try:
+            cleanup_old_messages()
+        except Exception as e:
+            print("WARN: retention cleanup failed: {}".format(e))
+        time.sleep(3600)
+
+
+if MSG_RETENTION_DAYS:
+    threading.Thread(target=_retention_loop, daemon=True, name="db-retention").start()
+
+
 def check_auth(user, password):
     return user == HTTP_USER and password == HTTP_PASS
 
@@ -145,6 +193,62 @@ def require_auth():
 @app.errorhandler(413)
 def request_too_large(e):
     return jsonify({"status": "error", "msg": "文件超过上传大小限制(200MB)"}), 413
+
+
+def flush_traffic(in_bytes, out_bytes):
+    """按天累计应用层流量（幂等增量写）"""
+    if in_bytes <= 0 and out_bytes <= 0:
+        return
+    day = datetime.now().strftime("%Y-%m-%d")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO traffic_daily (day, in_bytes, out_bytes) VALUES (?, ?, ?) "
+        "ON CONFLICT(day) DO UPDATE SET in_bytes = in_bytes + excluded.in_bytes, "
+        "out_bytes = out_bytes + excluded.out_bytes",
+        (day, in_bytes, out_bytes),
+    )
+    conn.commit()
+    conn.close()
+
+
+@app.before_request
+def traffic_request_size():
+    if not TRAFFIC_ENABLED:
+        return
+    try:
+        g.traffic_in = int(request.headers.get("Content-Length") or 0)
+    except Exception:
+        g.traffic_in = 0
+
+
+@app.after_request
+def traffic_count(resp):
+    try:
+        if not TRAFFIC_ENABLED:
+            return resp
+        # 本机看门狗探活（127.0.0.1 GET /）不计入，其余含 NapCat webhook 都算
+        if request.remote_addr in ("127.0.0.1", "::1") and request.method == "GET" and request.path == "/":
+            return resp
+        rin = getattr(g, "traffic_in", 0) or 0
+        cl = resp.headers.get("Content-Length")
+        if cl:
+            flush_traffic(rin, int(cl))
+        else:
+            # 流式响应（如群文件下载）：先记入流量，出流量由计数生成器在流结束后补记
+            flush_traffic(rin, 0)
+            bucket = [0]
+
+            def wrap(iterable):
+                for chunk in iterable:
+                    bucket[0] += len(chunk)
+                    yield chunk
+                flush_traffic(0, bucket[0])
+
+            if hasattr(resp.response, "__iter__"):
+                resp.response = wrap(resp.response)
+    except Exception:
+        pass
+    return resp
 
 
 def _extract_reply(rid):
@@ -318,7 +422,7 @@ def webhook():
             conn = get_db()
             conn.execute(
                 "INSERT OR IGNORE INTO received_messages (msg_type, sender_id, sender_name, group_id, group_name, message, raw_json, created_at, self_sent, target_id, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (msg_type, sender_id, sender_name, group_id, group_name, str(message), json.dumps(data, ensure_ascii=False), now, 1 if is_self else 0, target_id, data.get("message_id")),
+                (msg_type, sender_id, sender_name, group_id, group_name, str(message), json.dumps(data, ensure_ascii=False) if DB_RAW_JSON else None, now, 1 if is_self else 0, target_id, data.get("message_id")),
             )
             conn.commit()
             conn.close()
@@ -427,7 +531,7 @@ def send():
                      target_id if msg_type == "group" else None,
                      None,  # 群名暂不填
                      full_message,
-                     json.dumps({"self_sent": True, "message": full_message}, ensure_ascii=False),
+                     json.dumps({"self_sent": True, "message": full_message}, ensure_ascii=False) if DB_RAW_JSON else None,
                      now,
                      target_id if msg_type == "private" else None,
                      saved_msg_id),
@@ -654,14 +758,18 @@ def group_file_download():
         return jsonify({"status": "error", "msg": str(e)}), 502
 
     def stream():
+        n = 0
         try:
             while True:
                 chunk = upstream.read(64 * 1024)
                 if not chunk:
                     break
+                n += len(chunk)
                 yield chunk
         finally:
             upstream.close()
+            # QQ CDN → VPS 的入站腿是真实流量消耗（下载=双向），同样计入账单
+            flush_traffic(n, 0)
 
     headers = {
         "Content-Type": upstream.headers.get("Content-Type", "application/octet-stream"),
@@ -878,6 +986,8 @@ def proxy():
         with urllib_request.urlopen(req, timeout=15) as resp:
             data = resp.read()
             ctype = resp.headers.get("Content-Type", "image/jpeg")
+        # QQ CDN → VPS 的入站腿计入流量账单（出站腿由统计中间件按 Content-Length 记）
+        flush_traffic(len(data), 0)
         return Response(data, content_type=ctype)
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)}), 502
@@ -1001,9 +1111,45 @@ def conversations_agg():
     return jsonify(out)
 
 
+@app.route("/api/traffic")
+def traffic_stats():
+    """流量计费：本月汇总 + 近 30 天明细，费用 = GB × TRAFFIC_PRICE_PER_GB"""
+    if not TRAFFIC_ENABLED:
+        return jsonify({"enabled": False, "month": datetime.now().strftime("%Y-%m"),
+                        "in_bytes": 0, "out_bytes": 0, "total_bytes": 0,
+                        "total_gb": 0, "cost": 0, "price_per_gb": TRAFFIC_PRICE_PER_GB, "days": []})
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT day, in_bytes, out_bytes FROM traffic_daily "
+        "WHERE day >= ? ORDER BY day DESC LIMIT 62",
+        ((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),),
+    ).fetchall()
+    conn.close()
+    month = datetime.now().strftime("%Y-%m")
+    m_in = sum(r["in_bytes"] for r in rows if r["day"].startswith(month))
+    m_out = sum(r["out_bytes"] for r in rows if r["day"].startswith(month))
+    m_total = m_in + m_out
+    m_gb = m_total / 1e9
+    days = [
+        {"day": r["day"], "in_bytes": r["in_bytes"], "out_bytes": r["out_bytes"],
+         "total_gb": round((r["in_bytes"] + r["out_bytes"]) / 1e9, 3),
+         "cost": round((r["in_bytes"] + r["out_bytes"]) / 1e9 * TRAFFIC_PRICE_PER_GB, 2)}
+        for r in rows
+    ]
+    return jsonify({
+        "enabled": True,
+        "month": month,
+        "in_bytes": m_in, "out_bytes": m_out, "total_bytes": m_total,
+        "total_gb": round(m_gb, 3),
+        "cost": round(m_gb * TRAFFIC_PRICE_PER_GB, 2),
+        "price_per_gb": TRAFFIC_PRICE_PER_GB,
+        "days": days,
+    })
+
+
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", traffic_enabled=TRAFFIC_ENABLED)
 
 
 if __name__ == "__main__":
