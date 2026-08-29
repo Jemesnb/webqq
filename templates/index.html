@@ -144,6 +144,7 @@
     <div class="nav-item" onclick="switchPage('friendmgmt',this)">好友管理</div>
     <div class="nav-item" onclick="switchPage('groupmgmt',this)">群管理</div>
     <div class="nav-item" onclick="switchPage('groupfiles',this)">群文件</div>
+    <div class="nav-item" onclick="switchPage('traffic',this)">流量</div>
 </div>
 
 <div class="content">
@@ -308,6 +309,23 @@
     </div>
 </div>
 
+<!-- ========== 流量页面 ========== -->
+<div class="page" id="page-traffic">
+    <div class="page-scroll">
+        <div class="card">
+            <div class="card-header">
+                <h2>本月流量 <span class="badge badge-group" id="trafficMonth"></span></h2>
+                <button class="btn-refresh" onclick="loadTraffic()">刷新</button>
+            </div>
+            <div id="trafficSummary" style="font-size:0.9rem;color:#666">加载中...</div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h2>近30天明细 <span style="font-size:0.75rem;color:#999;font-weight:400">单价 <span id="trafficPrice"></span> 元/GB</span></h2></div>
+            <div id="trafficList" style="font-size:0.85rem;color:#999">加载中...</div>
+        </div>
+    </div>
+</div>
+
 </div>
 
 <div class="toast" id="toast"></div>
@@ -321,6 +339,7 @@ function switchPage(name, el) {
     el.classList.add('active');
     if (name === 'groupmgmt') loadGroupMgmt();
     if (name === 'groupfiles') loadGroupFileGroups();
+    if (name === 'traffic') loadTraffic();
     if (name === 'msg') { loadConvList(); }
     if (name === 'contacts') { loadFriends(); loadGroups(); }
 }
@@ -1456,6 +1475,34 @@ async function uploadGroupFiles(input) {
     btn.textContent = '⬆ 上传文件';
     showToast('上传完成：成功 ' + ok + ' 个' + (fail ? '，失败 ' + fail + ' 个' : ''));
     loadGroupFiles();
+}
+
+// ==================== 流量计费 ====================
+function fmtGB(bytes) { return (Number(bytes) / 1e9).toFixed(3); }
+
+async function loadTraffic() {
+    const sumEl = document.getElementById('trafficSummary');
+    const listEl = document.getElementById('trafficList');
+    try {
+        const resp = await fetch('/api/traffic');
+        const d = await resp.json();
+        if (!d.month) { sumEl.textContent = '加载失败'; return; }
+        document.getElementById('trafficMonth').textContent = d.month;
+        document.getElementById('trafficPrice').textContent = d.price_per_gb;
+        sumEl.innerHTML = '<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px">'
+            + '<div>↑ 上行 <b>' + fmtGB(d.in_bytes) + ' GB</b></div>'
+            + '<div>↓ 下行 <b>' + fmtGB(d.out_bytes) + ' GB</b></div>'
+            + '<div>合计 <b>' + d.total_gb + ' GB</b></div>'
+            + '<div style="color:#e5544b">应付费用 <b>¥' + d.cost.toFixed(2) + '</b></div>'
+            + '</div>'
+            + '<div style="font-size:0.75rem;color:#999">统计口径：WebQQ 应用层进出流量（网页访问/消息/图片/文件），QQ 协议本身流量不含在内；按自然月累计</div>';
+        listEl.innerHTML = d.days.length
+            ? d.days.map(x => '<div class="file-item"><span>' + x.day + '</span>'
+                + '<span class="file-meta">' + fmtGB(x.in_bytes) + ' GB ↑ · ' + fmtGB(x.out_bytes) + ' GB ↓ · 合计 ' + x.total_gb + ' GB · ¥' + x.cost.toFixed(2) + '</span></div>').join('')
+            : '暂无记录';
+    } catch(e) {
+        sumEl.textContent = '加载失败';
+    }
 }
 
 // ==================== 群公告 ====================

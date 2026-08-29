@@ -16,7 +16,7 @@ from urllib import request as urllib_request, error as urllib_error
 from urllib.parse import quote
 
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify, render_template, Response
+from flask import Flask, request, jsonify, render_template, Response, g
 
 load_dotenv()
 app = Flask(__name__)
@@ -34,6 +34,9 @@ HTTP_PASS = os.environ.get("HTTP_PASS", "")
 # MSG_RETENTION_DAYS=N   自动删除 N 天前的消息（0=永久保留），后台线程每小时清一次
 DB_RAW_JSON = os.environ.get("DB_RAW_JSON", "1") == "1"
 MSG_RETENTION_DAYS = int(os.environ.get("MSG_RETENTION_DAYS", "0"))
+
+# 流量计费：按天记录应用层进出流量，TRAFFIC_PRICE_PER_GB 单位为 元/GB（GB=10^9 字节）
+TRAFFIC_PRICE_PER_GB = float(os.environ.get("TRAFFIC_PRICE_PER_GB", "0.3"))
 
 if not NAPCAT_API or not NAPCAT_TOKEN or not HTTP_USER or not HTTP_PASS:
     print("检查环境变量文件是否重命名为 .env，并复制到同目录下")
@@ -91,6 +94,11 @@ def init_db():
             flag TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS traffic_daily (
+            day TEXT PRIMARY KEY,
+            in_bytes INTEGER NOT NULL DEFAULT 0,
+            out_bytes INTEGER NOT NULL DEFAULT 0
         )
     """)
     # Add columns if missing (upgrade old DB)
@@ -183,6 +191,58 @@ def require_auth():
 @app.errorhandler(413)
 def request_too_large(e):
     return jsonify({"status": "error", "msg": "文件超过上传大小限制(200MB)"}), 413
+
+
+def flush_traffic(in_bytes, out_bytes):
+    """按天累计应用层流量（幂等增量写）"""
+    if in_bytes <= 0 and out_bytes <= 0:
+        return
+    day = datetime.now().strftime("%Y-%m-%d")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO traffic_daily (day, in_bytes, out_bytes) VALUES (?, ?, ?) "
+        "ON CONFLICT(day) DO UPDATE SET in_bytes = in_bytes + excluded.in_bytes, "
+        "out_bytes = out_bytes + excluded.out_bytes",
+        (day, in_bytes, out_bytes),
+    )
+    conn.commit()
+    conn.close()
+
+
+@app.before_request
+def traffic_request_size():
+    try:
+        g.traffic_in = int(request.headers.get("Content-Length") or 0)
+    except Exception:
+        g.traffic_in = 0
+
+
+@app.after_request
+def traffic_count(resp):
+    try:
+        # 本机看门狗探活（127.0.0.1 GET /）不计入，其余含 NapCat webhook 都算
+        if request.remote_addr in ("127.0.0.1", "::1") and request.method == "GET" and request.path == "/":
+            return resp
+        rin = getattr(g, "traffic_in", 0) or 0
+        cl = resp.headers.get("Content-Length")
+        if cl:
+            flush_traffic(rin, int(cl))
+        else:
+            # 流式响应（如群文件下载）：先记入流量，出流量由计数生成器在流结束后补记
+            flush_traffic(rin, 0)
+            bucket = [0]
+
+            def wrap(iterable):
+                for chunk in iterable:
+                    bucket[0] += len(chunk)
+                    yield chunk
+                flush_traffic(0, bucket[0])
+
+            if hasattr(resp.response, "__iter__"):
+                resp.response = wrap(resp.response)
+    except Exception:
+        pass
+    return resp
 
 
 def _extract_reply(rid):
@@ -1037,6 +1097,37 @@ def conversations_agg():
             item["unread"] = by_key.get(item["key"], 0)
     conn.close()
     return jsonify(out)
+
+
+@app.route("/api/traffic")
+def traffic_stats():
+    """流量计费：本月汇总 + 近 30 天明细，费用 = GB × TRAFFIC_PRICE_PER_GB"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT day, in_bytes, out_bytes FROM traffic_daily "
+        "WHERE day >= ? ORDER BY day DESC LIMIT 62",
+        ((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),),
+    ).fetchall()
+    conn.close()
+    month = datetime.now().strftime("%Y-%m")
+    m_in = sum(r["in_bytes"] for r in rows if r["day"].startswith(month))
+    m_out = sum(r["out_bytes"] for r in rows if r["day"].startswith(month))
+    m_total = m_in + m_out
+    m_gb = m_total / 1e9
+    days = [
+        {"day": r["day"], "in_bytes": r["in_bytes"], "out_bytes": r["out_bytes"],
+         "total_gb": round((r["in_bytes"] + r["out_bytes"]) / 1e9, 3),
+         "cost": round((r["in_bytes"] + r["out_bytes"]) / 1e9 * TRAFFIC_PRICE_PER_GB, 2)}
+        for r in rows
+    ]
+    return jsonify({
+        "month": month,
+        "in_bytes": m_in, "out_bytes": m_out, "total_bytes": m_total,
+        "total_gb": round(m_gb, 3),
+        "cost": round(m_gb * TRAFFIC_PRICE_PER_GB, 2),
+        "price_per_gb": TRAFFIC_PRICE_PER_GB,
+        "days": days,
+    })
 
 
 @app.route("/")
