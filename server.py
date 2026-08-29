@@ -9,7 +9,9 @@ import re
 import base64
 import shutil
 import tempfile
-from datetime import datetime
+import threading
+import time
+from datetime import datetime, timedelta
 from urllib import request as urllib_request, error as urllib_error
 from urllib.parse import quote
 
@@ -26,6 +28,12 @@ NAPCAT_TOKEN = os.environ.get("NAPCAT_TOKEN")
 
 HTTP_USER = os.environ.get("HTTP_USER", "")
 HTTP_PASS = os.environ.get("HTTP_PASS", "")
+
+# 小盘机器瘦身开关（默认关闭，行为与老版本一致）
+# DB_RAW_JSON=0          新消息不存完整事件 JSON（省 ~70% 空间；raw_json 本就只写不读）
+# MSG_RETENTION_DAYS=N   自动删除 N 天前的消息（0=永久保留），后台线程每小时清一次
+DB_RAW_JSON = os.environ.get("DB_RAW_JSON", "1") == "1"
+MSG_RETENTION_DAYS = int(os.environ.get("MSG_RETENTION_DAYS", "0"))
 
 if not NAPCAT_API or not NAPCAT_TOKEN or not HTTP_USER or not HTTP_PASS:
     print("检查环境变量文件是否重命名为 .env，并复制到同目录下")
@@ -114,6 +122,36 @@ def init_db():
 
 
 init_db()
+
+
+def cleanup_old_messages():
+    """按 MSG_RETENTION_DAYS 删除过期消息（0=不启用）。
+
+    只 DELETE 不 VACUUM：SQLite 会复用释放出来的页，文件大小趋于稳定，
+    避免 VACUUM 需要的双倍临时空间（小盘机器受不起）。
+    """
+    if not MSG_RETENTION_DAYS:
+        return
+    cutoff = (datetime.now() - timedelta(days=MSG_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db()
+    n = conn.execute("DELETE FROM received_messages WHERE created_at < ?", (cutoff,)).rowcount
+    conn.commit()
+    conn.close()
+    if n:
+        print("cleanup: removed {} messages older than {} days".format(n, MSG_RETENTION_DAYS))
+
+
+def _retention_loop():
+    while True:
+        try:
+            cleanup_old_messages()
+        except Exception as e:
+            print("WARN: retention cleanup failed: {}".format(e))
+        time.sleep(3600)
+
+
+if MSG_RETENTION_DAYS:
+    threading.Thread(target=_retention_loop, daemon=True, name="db-retention").start()
 
 
 def check_auth(user, password):
@@ -318,7 +356,7 @@ def webhook():
             conn = get_db()
             conn.execute(
                 "INSERT OR IGNORE INTO received_messages (msg_type, sender_id, sender_name, group_id, group_name, message, raw_json, created_at, self_sent, target_id, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (msg_type, sender_id, sender_name, group_id, group_name, str(message), json.dumps(data, ensure_ascii=False), now, 1 if is_self else 0, target_id, data.get("message_id")),
+                (msg_type, sender_id, sender_name, group_id, group_name, str(message), json.dumps(data, ensure_ascii=False) if DB_RAW_JSON else None, now, 1 if is_self else 0, target_id, data.get("message_id")),
             )
             conn.commit()
             conn.close()
@@ -427,7 +465,7 @@ def send():
                      target_id if msg_type == "group" else None,
                      None,  # 群名暂不填
                      full_message,
-                     json.dumps({"self_sent": True, "message": full_message}, ensure_ascii=False),
+                     json.dumps({"self_sent": True, "message": full_message}, ensure_ascii=False) if DB_RAW_JSON else None,
                      now,
                      target_id if msg_type == "private" else None,
                      saved_msg_id),
