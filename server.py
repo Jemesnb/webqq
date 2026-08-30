@@ -284,6 +284,8 @@ def _extract_reply(rid):
                     txts.append("@" + ("所有人" if qq == "all" else qq))
                 elif s.get("type") == "image":
                     txts.append("[图片]")
+                elif s.get("type") == "file":
+                    txts.append("[文件] " + str(s.get("data", {}).get("file", "")))
             text = "".join(txts).strip()
         if not text:
             text = str(d.get("raw_message") or "").strip()
@@ -348,6 +350,13 @@ def parse_message_to_cq(data):
             f = d.get("file", "")
             if f:
                 out.append("[CQ:image,file={}]".format(f))
+        elif t == "file":
+            # 群文件消息：保留文件名/ID/大小，供前端渲染文件卡片与下载
+            fname = str(d.get("file", ""))
+            if fname:
+                esc = lambda x: str(x).replace(",", "，").replace("[", "【").replace("]", "】")
+                out.append("[CQ:file,file={f},fid={i},size={s}]".format(
+                    f=esc(fname), i=esc(d.get("file_id", "")), s=esc(d.get("file_size", ""))))
         elif t == "face":
             fid = d.get("id", "")
             if fid:
