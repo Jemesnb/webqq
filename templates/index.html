@@ -392,7 +392,9 @@ input, textarea, select { font-family: inherit; outline: none; }
         </div>
         <div class="chat-toolbar">
           <input type="file" id="imageInput" accept="image/*" style="display:none">
+          <input type="file" id="chatFileInput" style="display:none" onchange="sendChatFile(this)">
           <input type="file" id="gfFileInput" multiple style="display:none" onchange="uploadGroupFiles(this)">
+          <button type="button" class="tool-btn" onclick="document.getElementById('chatFileInput').click()" title="发送文件">📎</button>
           <button type="button" class="tool-btn" onclick="document.getElementById('imageInput').click()" title="图片">📷</button>
           <button type="button" class="tool-btn" onclick="toggleFacePanel()" title="表情">😀</button>
           <button type="button" class="tool-btn" onclick="toggleAtPanel()" title="@ 选人">@️</button>
@@ -934,11 +936,29 @@ function renderReplyToken(seg) {
   return '<div class="quote">' + label + '</div>';
 }
 async function chatDownloadFile(fileId, groupId) {
-  try {
-    const d = await api('/api/group/file_url?group_id=' + groupId + '&file_id=' + encodeURIComponent(fileId) + '&busid=102');
-    if (d.status === 'ok' && d.url) { window.open(d.url, '_blank'); return; }
-    toast('获取下载链接失败: ' + (d.msg || ''));
-  } catch (e) { /* api 已提示 */ }
+    try {
+        const d = await api('/api/group/file_url?group_id=' + groupId + '&file_id=' + encodeURIComponent(fileId) + '&busid=102');
+        if (d.status === 'ok' && d.url) { window.open(d.url, '_blank'); return; }
+        toast('获取下载链接失败: ' + (d.msg || ''));
+    } catch (e) { /* api 已提示 */ }
+}
+async function sendChatFile(input) {
+    if (!activeConvKey) { input.value = ''; return; }
+    const file = input.files[0];
+    input.value = '';
+    if (!file) return;
+    const conv = ensureConv(activeConvKey);
+    const fd = new FormData();
+    if (conv.type === 'g') fd.append('group_id', conv.id);
+    else fd.append('target_id', conv.id);
+    fd.append('file', file);
+    toast('正在发送文件「' + file.name + '」...');
+    try {
+      const d = await api('/api/send_file', { method: 'POST', body: fd });
+      if (d.status === 'ok') toast('文件已发送');
+      else toast('发送失败: ' + (d.msg || ''));
+      loadConvList();
+    } catch (e) { toast('发送失败'); }
 }
 function renderChat(forceBottom) {
   const body = $('chatBody');

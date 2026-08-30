@@ -797,6 +797,44 @@ def group_file_download():
     return Response(stream(), headers=headers)
 
 
+@app.route("/api/send_file", methods=["POST"])
+def send_file_route():
+    """发送文件消息（群/私聊）。multipart：file + group_id 或 target_id
+
+    与群文件上传同样的临时目录映射逻辑（Docker 部署时容器经挂载路径读取）
+    """
+    group_id = request.form.get("group_id")
+    target_id = request.form.get("target_id")
+    f = request.files.get("file")
+    if not f or not f.filename or (not group_id and not target_id):
+        return jsonify({"status": "error", "msg": "missing params"}), 400
+    fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(f.filename)[1], dir=UPLOAD_TMP_DIR or None)
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            shutil.copyfileobj(f.stream, tmp)
+        napcat_path = tmp_path
+        if UPLOAD_TMP_DIR and UPLOAD_TMP_DIR_IN_CONTAINER:
+            napcat_path = UPLOAD_TMP_DIR_IN_CONTAINER.rstrip("/") + "/" + os.path.basename(tmp_path)
+        file_seg = [{"type": "file", "data": {"file": "file://" + napcat_path, "name": f.filename}}]
+        if group_id:
+            action = "send_group_msg"
+            payload = {"group_id": str(group_id), "message": file_seg}
+        else:
+            action = "send_private_msg"
+            payload = {"user_id": str(target_id), "message": file_seg}
+        result, err = napcat_api(action, method="POST", payload=payload)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+    if err:
+        return jsonify({"status": "error", "msg": err}), 502
+    nap_data = result.get("data") if isinstance(result, dict) else None
+    msg_id = nap_data.get("message_id") if isinstance(nap_data, dict) else None
+    return jsonify({"status": "ok", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "msg_id": msg_id})
+
+
 @app.route("/api/group/file/upload", methods=["POST"])
 def group_file_upload():
     """上传群文件（multipart：file + group_id + folder_id）
