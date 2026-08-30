@@ -40,6 +40,13 @@ MSG_RETENTION_DAYS = int(os.environ.get("MSG_RETENTION_DAYS", "0"))
 TRAFFIC_ENABLED = os.environ.get("TRAFFIC_ENABLED", "0") == "1"
 TRAFFIC_PRICE_PER_GB = float(os.environ.get("TRAFFIC_PRICE_PER_GB", "0.3"))
 
+# 群文件上传临时目录：NapCat 跑在 Docker 里时，容器看不到宿主机 /tmp。
+# 把临时目录设为容器已挂载的宿主机路径（UPLOAD_TMP_DIR），并告知该目录在
+# 容器内的对应路径（UPLOAD_TMP_DIR_IN_CONTAINER），NapCat 即可读到同一文件。
+# NapCat 与 Flask 同机裸跑（非容器）时无需设置，走默认 /tmp。
+UPLOAD_TMP_DIR = os.environ.get("UPLOAD_TMP_DIR", "")
+UPLOAD_TMP_DIR_IN_CONTAINER = os.environ.get("UPLOAD_TMP_DIR_IN_CONTAINER", "")
+
 if not NAPCAT_API or not NAPCAT_TOKEN or not HTTP_USER or not HTTP_PASS:
     print("检查环境变量文件是否重命名为 .env，并复制到同目录下")
     print("或检查 NAPCAT_API, NAPCAT_TOKEN, HTTP_USER, HTTP_PASS 是否已经填写")
@@ -792,11 +799,15 @@ def group_file_upload():
     f = request.files.get("file")
     if not group_id or not f or not f.filename:
         return jsonify({"status": "error", "msg": "missing params"}), 400
-    fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(f.filename)[1])
+    fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(f.filename)[1], dir=UPLOAD_TMP_DIR or None)
     try:
         with os.fdopen(fd, "wb") as tmp:
             shutil.copyfileobj(f.stream, tmp)
-        payload = {"group_id": str(group_id), "file": "file://" + tmp_path, "name": f.filename}
+        napcat_path = tmp_path
+        if UPLOAD_TMP_DIR and UPLOAD_TMP_DIR_IN_CONTAINER:
+            # Docker 部署：把宿主机路径换算成容器内可见路径
+            napcat_path = UPLOAD_TMP_DIR_IN_CONTAINER.rstrip("/") + "/" + os.path.basename(tmp_path)
+        payload = {"group_id": str(group_id), "file": "file://" + napcat_path, "name": f.filename}
         if folder_id and folder_id != "/":
             payload["folder"] = folder_id
         result, err = napcat_api("upload_group_file", method="POST", payload=payload)
