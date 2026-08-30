@@ -904,7 +904,7 @@ function renderCQToken(seg) {
     const fid = String(p.fid || '').replace(/'/g, '');
     const sizeTxt = p.size ? ' · ' + fmtFileSize(p.size) : '';
     const gid = (activeConvKey && activeConvKey.startsWith('g:')) ? activeConvKey.slice(2) : '';
-    const dl = gid ? '<button class="fc-dl" onclick="chatDownloadFile(\'' + fid + '\',' + gid + ')">下载</button>' : '';
+    const dl = (gid && fid) ? '<button class="fc-dl" onclick="chatDownloadFile(\'' + fid + '\',' + gid + ')">下载</button>' : '';
     return '<div class="file-card"><span class="fc-icon">📄</span>'
       + '<div class="fc-main"><div class="fc-name">' + escapeHtml(p.file || '未命名文件') + '</div>'
       + '<div class="fc-sub">群文件' + sizeTxt + '</div></div>' + dl + '</div>';
@@ -955,9 +955,19 @@ async function sendChatFile(input) {
     toast('正在发送文件「' + file.name + '」...');
     try {
       const d = await api('/api/send_file', { method: 'POST', body: fd });
-      if (d.status === 'ok') toast('文件已发送');
-      else toast('发送失败: ' + (d.msg || ''));
+      if (d.status !== 'ok') { toast('发送失败: ' + (d.msg || '')); return; }
+      // NapCat 对 API 文件发送不回发消息事件,本地回显文件卡片(NapCat 不会重复推送,无去重问题)
+    sentMsgs.push({
+        key: activeConvKey, mine: true, pending: true, msgid: data.id || undefined,
+        msg_type: conv.type === 'g' ? 'group' : 'private',
+        sender_name: $('myNickname').textContent || '我',
+        message: '[CQ:file,file=' + file.name.replace(/,/g, '，').replace(/]/g, '】') + ',size=' + file.size + ']',
+        time: d.time || nowStr()
+      });
+      bumpConvAggLocal(activeConvKey, sentMsgs[sentMsgs.length - 1]);
+      renderChat(true);
       loadConvList();
+      toast('文件已发送');
     } catch (e) { toast('发送失败'); }
 }
 function renderChat(forceBottom) {

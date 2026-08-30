@@ -812,6 +812,7 @@ def send_file_route():
     try:
         with os.fdopen(fd, "wb") as tmp:
             shutil.copyfileobj(f.stream, tmp)
+        fsize = os.path.getsize(tmp_path)
         napcat_path = tmp_path
         if UPLOAD_TMP_DIR and UPLOAD_TMP_DIR_IN_CONTAINER:
             napcat_path = UPLOAD_TMP_DIR_IN_CONTAINER.rstrip("/") + "/" + os.path.basename(tmp_path)
@@ -832,7 +833,28 @@ def send_file_route():
         return jsonify({"status": "error", "msg": err}), 502
     nap_data = result.get("data") if isinstance(result, dict) else None
     msg_id = nap_data.get("message_id") if isinstance(nap_data, dict) else None
-    return jsonify({"status": "ok", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "msg_id": msg_id})
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 与 /api/send 一致：把自己发的文件消息落库（NapCat 对 API 文件发送不回发事件）
+    row_id = None
+    try:
+        my_res, _ = napcat_api("get_login_info", method="POST", payload={})
+        my_data = (my_res.get("data") if isinstance(my_res, dict) else my_res) or {}
+        stored = "[CQ:file,file={},size={}]".format(
+            str(f.filename).replace(",", "，").replace("[", "【").replace("]", "】"),
+            str(fsize))
+        conn = get_db()
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO received_messages (msg_type, sender_id, sender_name, group_id, group_name, message, raw_json, created_at, self_sent, target_id, msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            ("group" if group_id else "private", my_data.get("user_id"), my_data.get("nickname", "我"),
+             group_id or None, None, stored, None, now,
+             int(target_id) if target_id else None, msg_id),
+        )
+        conn.commit()
+        row_id = cur.lastrowid
+        conn.close()
+    except Exception as db_err:
+        print("WARN: failed to save sent file message: {}".format(db_err))
+    return jsonify({"status": "ok", "id": row_id, "time": now, "msg_id": msg_id})
 
 
 @app.route("/api/group/file/upload", methods=["POST"])
